@@ -68,19 +68,32 @@ def connect() -> sqlite3.Connection:
             title TEXT, date TEXT, rtype TEXT, rid TEXT, status TEXT, source_commit TEXT, tags TEXT,
             created_at TEXT, updated_at TEXT);
         CREATE INDEX IF NOT EXISTS files_rid ON files(rid);
-        CREATE TABLE IF NOT EXISTS chunk_map(path TEXT, rowid_ INTEGER);
+        CREATE TABLE IF NOT EXISTS chunk_map(path TEXT, rowid_ INTEGER, hash TEXT);
         CREATE INDEX IF NOT EXISTS chunk_map_path ON chunk_map(path);
+        CREATE INDEX IF NOT EXISTS chunk_map_hash ON chunk_map(hash);
         CREATE VIRTUAL TABLE IF NOT EXISTS chunks USING fts5(
             body, heading, title, project, tags,
             path UNINDEXED, line UNINDEXED, endline UNINDEXED, date UNINDEXED, ts UNINDEXED, speaker UNINDEXED,
             pnorm UNINDEXED,
             tokenize='unicode61 remove_diacritics 2');
-        CREATE TABLE IF NOT EXISTS vecs(hash TEXT PRIMARY KEY, model TEXT, dim INTEGER, v BLOB);
+        
+        -- Universal Memory v3: Wikilinks & Graph Layer
+        CREATE TABLE IF NOT EXISTS memory_nodes (
+            id TEXT PRIMARY KEY,
+            path TEXT NOT NULL UNIQUE,
+            project TEXT NOT NULL,
+            type TEXT NOT NULL,
+            status TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS memory_edges (
+            source_id TEXT NOT NULL,
+            target_id TEXT NOT NULL,
+            relation TEXT NOT NULL,
+            PRIMARY KEY (source_id, target_id, relation)
+        );
+        CREATE INDEX IF NOT EXISTS idx_edges_target ON memory_edges(target_id, relation);
+        CREATE INDEX IF NOT EXISTS idx_edges_source ON memory_edges(source_id, relation);
     """)
-    # additive migrations (v2.1): content hash per chunk (semantic vectors are keyed by it) and per-file time-zone flag
-    if "hash" not in [r[1] for r in conn.execute("PRAGMA table_info(chunk_map)")]:
-        conn.execute("ALTER TABLE chunk_map ADD COLUMN hash TEXT")
-    conn.execute("CREATE INDEX IF NOT EXISTS chunk_map_hash ON chunk_map(hash)")
     if "tzlocal" not in [r[1] for r in conn.execute("PRAGMA table_info(files)")]:
         conn.execute("ALTER TABLE files ADD COLUMN tzlocal INTEGER DEFAULT 0")
     conn.commit()
@@ -199,6 +212,33 @@ def _speaker_ts(heading: str) -> Tuple[str, str]:
     return speaker, ts
 
 
+_WIKILINK_RE = re.compile(r"\[\[([^\]\|#]+)(?:#[^\]\|]+)?(?:\|[^\]]+)?\]\]")
+_TYPED_EDGE_RE = re.compile(r"^\s*-\s*(supersedes|depends_on|evidenced_by|related_to|applies_to):\s*\[\[([^\]\|#]+)", re.IGNORECASE)
+
+
+def _extract_edges(source_id: str, lines: List[str]) -> List[Tuple[str, str, str]]:
+    """Extract Wikilinks [[target]] and typed relations (supersedes, depends_on, etc.)."""
+    edges: List[Tuple[str, str, str]] = []
+    seen = set()
+    for line in lines:
+        typed_m = _TYPED_EDGE_RE.search(line)
+        if typed_m:
+            rel_type = typed_m.group(1).lower()
+            target_raw = typed_m.group(2).strip()
+            edge_key = (source_id, target_raw, rel_type)
+            if edge_key not in seen:
+                edges.append(edge_key)
+                seen.add(edge_key)
+        else:
+            for m in _WIKILINK_RE.finditer(line):
+                target_raw = m.group(1).strip()
+                edge_key = (source_id, target_raw, "related_to")
+                if edge_key not in seen:
+                    edges.append(edge_key)
+                    seen.add(edge_key)
+    return edges
+
+
 # --------------------------------------------------------------------------- indexing
 
 def _index_file(conn: sqlite3.Connection, abs_path: str, rel: str, st: os.stat_result) -> int:
@@ -222,6 +262,20 @@ def _index_file(conn: sqlite3.Connection, abs_path: str, rel: str, st: os.stat_r
          meta["date"], meta["rtype"], meta["rid"], meta["status"], meta["source_commit"], meta["tags"],
          meta["created_at"], meta["updated_at"], meta["tzlocal"]),
     )
+
+    # Wikilinks & Graph node/edge indexing
+    node_id = meta["rid"] or rel.replace(os.sep, "/").removesuffix(".md")
+    conn.execute(
+        "INSERT OR REPLACE INTO memory_nodes(id, path, project, type, status) VALUES (?,?,?,?,?)",
+        (node_id, rel, meta["project"], meta["rtype"], meta["status"])
+    )
+    conn.execute("DELETE FROM memory_edges WHERE source_id = ?", (node_id,))
+    for s_id, t_id, r_type in _extract_edges(node_id, lines):
+        conn.execute(
+            "INSERT OR IGNORE INTO memory_edges(source_id, target_id, relation) VALUES (?,?,?)",
+            (s_id, t_id, r_type)
+        )
+
     count = 0
     for start, end, heading in _chunks(lines, fm_lines):
         text = "\n".join(lines[start - 1:end])
@@ -489,16 +543,58 @@ def _record(conn: sqlite3.Connection, f: sqlite3.Row, start: int, end: int, extr
     if len(text) > GET_MAX_CHARS:
         text = text[:GET_MAX_CHARS] + "\n...[kesildi: devamı için 'dosya#satır' veya 'dosya#baş:son' kullan]"
         truncated = True
-    head = None
-    stale = False
-    if f["source_commit"] and f["project"] and f["project"] != "global":
-        head = memory_engine._get_git_commit(f["project"])
-        stale = bool(head and head != f["source_commit"])
+
+    # Parse applies_to dependencies for Git provenance
+    applies_to: List[str] = []
+    for line in text.splitlines()[:50]:
+        line_s = line.strip()
+        if line_s.startswith("- applies_to:") or line_s.startswith("applies_to:"):
+            val = line_s.split(":", 1)[1].strip()
+            if val.startswith("[") and val.endswith("]"):
+                applies_to.extend([x.strip("'\" ") for x in val[1:-1].split(",") if x.strip()])
+            else:
+                applies_to.append(val.strip("'\" "))
+
+    validity = memory_engine.check_validity(f["project"], f["source_commit"], applies_to)
+    head = validity.get("head_commit")
+    stale = validity.get("status") == "review_required"
+
+    # Wikilinks & Graph relations
+    node_id = f["rid"] or f["path"].replace(os.sep, "/").removesuffix(".md")
+    base_name = os.path.basename(f["path"]).removesuffix(".md")
+    outgoing = []
+    for r in conn.execute(
+        "SELECT target_id, relation FROM memory_edges WHERE source_id = ? OR source_id = ?",
+        (node_id, f["path"])
+    ).fetchall():
+        outgoing.append({"target": r["target_id"], "relation": r["relation"]})
+
+    backlinks = []
+    for r in conn.execute(
+        """SELECT e.source_id, e.relation, n.path, n.project, n.type 
+           FROM memory_edges e 
+           LEFT JOIN memory_nodes n ON n.id = e.source_id 
+           WHERE e.target_id = ? OR e.target_id = ? OR e.target_id = ?""",
+        (node_id, f["path"], base_name)
+    ).fetchall():
+        backlinks.append({
+            "source": r["source_id"],
+            "relation": r["relation"],
+            "path": r["path"],
+            "project": r["project"],
+            "type": r["type"]
+        })
+
     out = {
         "id": f["rid"] or f"{f['path'].replace(os.sep, '/')}#{start}",
         "project": f["project"], "type": f["rtype"], "title": f["title"], "tags": f["tags"], "status": f["status"],
         "agent": f["agent"], "session": f["session"], "date": f["date"],
         "source_commit": f["source_commit"], "head_commit": head, "stale_warning": stale,
+        "validity": validity,
+        "relations": {
+            "outgoing": outgoing,
+            "backlinks": backlinks
+        },
         "created_at": f["created_at"], "updated_at": f["updated_at"],
         "lines": f"{start}-{end}", "truncated": truncated,
         "content": text, "filepath": os.path.join(_vault_root(), f["path"]),

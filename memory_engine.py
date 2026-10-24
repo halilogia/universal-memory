@@ -34,7 +34,7 @@ PROJECT_PATHS: Dict[str, str] = {
 def _get_git_commit(project_name: str) -> Optional[str]:
     """Get current HEAD commit hash for a project if available."""
     repo_path = PROJECT_PATHS.get(project_name)
-    if not repo_path or not os.path.isdir(os.path.join(repo_path, ".git")):
+    if not repo_path or not (os.path.isdir(os.path.join(repo_path, ".git")) or os.path.isfile(os.path.join(repo_path, ".git"))):
         return None
     try:
         out = subprocess.check_output(
@@ -46,6 +46,53 @@ def _get_git_commit(project_name: str) -> Optional[str]:
         return out
     except Exception:
         return None
+
+
+def check_validity(project_name: str, source_commit: str, applies_to: List[str] = []) -> Dict[str, Any]:
+    """Inspect Git validity: valid, review_required, unknown, or diverged with file-level granularity."""
+    if not source_commit or not project_name:
+        return {"status": "unknown", "reason": "No source commit or project"}
+
+    repo_path = PROJECT_PATHS.get(project_name)
+    if not repo_path or not (os.path.isdir(os.path.join(repo_path, ".git")) or os.path.isfile(os.path.join(repo_path, ".git"))):
+        return {"status": "unknown", "reason": f"No git repository found for project '{project_name}'"}
+
+    head_commit = _get_git_commit(project_name)
+    if not head_commit:
+        return {"status": "unknown", "reason": "Could not determine HEAD commit"}
+
+    if head_commit == source_commit:
+        return {"status": "valid", "head_commit": head_commit, "source_commit": source_commit}
+
+    # If applies_to is specified, check if those exact files changed since source_commit
+    if applies_to:
+        try:
+            diff_cmd = ["git", "diff", "--name-only", source_commit, "HEAD", "--"] + applies_to
+            out = subprocess.check_output(diff_cmd, cwd=repo_path, stderr=subprocess.DEVNULL, text=True).strip()
+            changed_files = [f.strip() for f in out.splitlines() if f.strip()]
+            if not changed_files:
+                return {
+                    "status": "valid",
+                    "head_commit": head_commit,
+                    "source_commit": source_commit,
+                    "note": f"HEAD is ahead but target dependencies {applies_to} remain unchanged."
+                }
+            else:
+                return {
+                    "status": "review_required",
+                    "head_commit": head_commit,
+                    "source_commit": source_commit,
+                    "changed_dependencies": changed_files
+                }
+        except Exception:
+            pass
+
+    return {
+        "status": "review_required",
+        "head_commit": head_commit,
+        "source_commit": source_commit,
+        "reason": f"HEAD ({head_commit}) is ahead of decision commit ({source_commit})"
+    }
 
 
 def init_db() -> sqlite3.Connection:
@@ -316,20 +363,32 @@ def _legacy_memory_get(record_id: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def memory_propose(project: str, rtype: str, title: str, content: str, tags: List[str] = []) -> Dict[str, Any]:
-    """Create a new proposal in the memory vault."""
-    slug = re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')[:40]
-    rec_id = f"{rtype}-{slug}"
-
-    proj_dir = os.path.join(VAULT_ROOT, "projects", project)
-    if rtype == "decision":
-        target_dir = os.path.join(proj_dir, "decisions")
-    elif rtype == "lesson":
-        target_dir = os.path.join(proj_dir, "lessons")
+def _safe_project_dir(project: str, subfolder: str = "") -> str:
+    """Ensure project and subfolder are strictly within VAULT_ROOT (prevents path traversal)."""
+    clean_project = re.sub(r'[^a-zA-Z0-9_\-]', '', project.strip()) or "global"
+    clean_subfolder = re.sub(r'[^a-zA-Z0-9_\-]', '', subfolder.strip())
+    
+    if clean_subfolder:
+        target = os.path.join(VAULT_ROOT, "projects", clean_project, clean_subfolder)
     else:
-        target_dir = proj_dir
+        target = os.path.join(VAULT_ROOT, "projects", clean_project)
 
-    os.makedirs(target_dir, exist_ok=True)
+    os.makedirs(target, exist_ok=True)
+    real_vault = os.path.realpath(VAULT_ROOT)
+    real_target = os.path.realpath(target)
+    if not real_target.startswith(real_vault):
+        raise ValueError(f"Security error: Target path '{target}' is outside vault '{VAULT_ROOT}'")
+    return target
+
+
+def memory_propose(project: str, rtype: str, title: str, content: str, tags: List[str] = []) -> Dict[str, Any]:
+    """Create a new proposal in the memory vault with atomic write and collision protection."""
+    date_tag = datetime.now().strftime("%Y%m%d-%H%M%S")
+    slug = re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')[:35] or "item"
+    rec_id = f"{rtype}-{slug}-{date_tag}"
+
+    subfolder = "decisions" if rtype == "decision" else ("lessons" if rtype == "lesson" else "")
+    target_dir = _safe_project_dir(project, subfolder)
     target_file = os.path.join(target_dir, f"{rec_id.upper()}.md")
 
     head_commit = _get_git_commit(project) or ""
@@ -352,8 +411,16 @@ created_at: {now_str}
 {content}
 """
 
-    with open(target_file, "w", encoding="utf-8") as f:
-        f.write(markdown)
+    # Atomic create: fail if already exists to prevent accidental overwrite
+    try:
+        with open(target_file, "x", encoding="utf-8") as f:
+            f.write(markdown)
+    except FileExistsError:
+        # Fallback with microseconds if collision occurs
+        rec_id = f"{rec_id}-{datetime.now().microsecond}"
+        target_file = os.path.join(target_dir, f"{rec_id.upper()}.md")
+        with open(target_file, "w", encoding="utf-8") as f:
+            f.write(markdown)
 
     sync_vault()
     return {
@@ -366,16 +433,28 @@ created_at: {now_str}
 
 
 def memory_commit(record_id: str) -> Dict[str, Any]:
-    """Promote a proposal to canonical approved status."""
+    """Promote a proposal to canonical approved status with strict state verification."""
     rec = memory_get(record_id)
     if not rec:
         return {"success": False, "error": f"Record not found: {record_id}"}
 
-    filepath = rec["filepath"]
+    current_status = (rec.get("status") or "").lower()
+    if current_status == "canonical":
+        return {"success": True, "id": record_id, "status": "canonical", "notice": "Already canonical"}
+    if current_status != "proposal":
+        return {"success": False, "error": f"Record '{record_id}' is not in 'proposal' state (current: '{current_status}')"}
+
+    filepath = rec.get("filepath")
+    if not filepath or not os.path.isfile(filepath):
+        return {"success": False, "error": f"File path for record '{record_id}' does not exist"}
+
     with open(filepath, "r", encoding="utf-8") as f:
         text = f.read()
 
-    new_text = re.sub(r"status:\s*proposal", "status: canonical", text)
+    new_text, count = re.subn(r"^status:\s*proposal", "status: canonical", text, count=1, flags=re.MULTILINE)
+    if count == 0:
+        return {"success": False, "error": "Frontmatter 'status: proposal' could not be found to promote"}
+
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(new_text)
 
@@ -384,13 +463,12 @@ def memory_commit(record_id: str) -> Dict[str, Any]:
 
 
 def memory_handoff(project: str, summary: str, decisions: List[str] = [], unresolved: List[str] = []) -> Dict[str, Any]:
-    """Create a structured handoff note for agent transitions."""
-    proj_dir = os.path.join(VAULT_ROOT, "projects", project, "handoffs")
-    os.makedirs(proj_dir, exist_ok=True)
+    """Create a structured handoff note for agent transitions with collision-safe timestamp."""
+    target_dir = _safe_project_dir(project, "handoffs")
 
-    date_slug = datetime.now().strftime("%Y-%m-%d-%H%M")
+    date_slug = datetime.now().strftime("%Y-%m-%d-%H%M%S")
     rec_id = f"handoff-{date_slug}"
-    target_file = os.path.join(proj_dir, f"HANDOFF-{date_slug}.md")
+    target_file = os.path.join(target_dir, f"HANDOFF-{date_slug}.md")
 
     head_commit = _get_git_commit(project) or ""
     now_str = datetime.now().isoformat()
