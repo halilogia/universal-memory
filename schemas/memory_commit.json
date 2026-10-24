@@ -1,0 +1,1 @@
+{"name":"memory_commit","description":"Önerilen kararı onaylayıp kalıcılaştırma: Durumu 'proposal' olan kaydı 'canonical' yapar ve FTS5 indeksini günceller.","parameters":{"properties":{"record_id":{"description":"Kalıcılaştırılacak kayıt kimliği.","type":"string"}},"required":["record_id"],"type":"object"}}

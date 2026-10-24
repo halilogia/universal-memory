@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.bak*
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Universal Memory cache and database
+.index/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Environment & IDE
+.env
+.idea/
+.vscode/
