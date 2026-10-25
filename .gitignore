@@ -14,6 +14,18 @@ env/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
+*.db
+*.jsonl
+*.log
+
+# Memory archives & transcripts
+vault/
+conversations/
+transcripts/
+memories/
+
+# GravityGuard runtime & logs
+.gravityguard/
 
 # Environment & IDE
 .env

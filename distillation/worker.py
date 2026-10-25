@@ -16,7 +16,7 @@ import subprocess
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 
-VAULT_ROOT = os.environ.get("UNIVERSAL_MEMORY_VAULT", os.path.expanduser(r"C:\Users\Halil Emre\Desktop\GitHub\obsidian"))
+VAULT_ROOT = os.environ.get("UNIVERSAL_MEMORY_VAULT", os.path.expanduser("~/Desktop/GitHub/obsidian"))
 
 
 class DeterministicExtractor:

@@ -14,7 +14,7 @@ from typing import List, Dict, Optional, Any
 
 VAULT_ROOT = os.environ.get("UNIVERSAL_MEMORY_VAULT")
 if not VAULT_ROOT:
-    default_vault = os.path.expanduser(r"C:\Users\Halil Emre\Desktop\GitHub\obsidian")
+    default_vault = os.path.expanduser("~/Desktop/GitHub/obsidian")
     if os.path.exists(default_vault):
         VAULT_ROOT = default_vault
     else:
@@ -23,11 +23,12 @@ if not VAULT_ROOT:
 INDEX_DIR = os.path.join(VAULT_ROOT, ".index")
 DB_PATH = os.path.join(INDEX_DIR, "memory.sqlite")
 
+_home = os.path.expanduser("~")
 PROJECT_PATHS: Dict[str, str] = {
-    "GrandStrategy3D": r"C:\Users\Halil Emre\Desktop\GitHub\Public\GrandStrategy3D",
-    "GravityGuard": r"C:\Users\Halil Emre\Desktop\GitHub\Public\GravityGuard",
-    "ClaudeVideoEditor": r"C:\Users\Halil Emre\Desktop\GitHub\Public\ClaudeVideoEditor",
-    "Token-Lens": r"C:\Users\Halil Emre\.gemini\mcp\token-lens",
+    "GrandStrategy3D": os.path.join(_home, "Desktop", "GitHub", "Public", "GrandStrategy3D"),
+    "GravityGuard": os.path.join(_home, "Desktop", "GitHub", "Public", "GravityGuard"),
+    "ClaudeVideoEditor": os.path.join(_home, "Desktop", "GitHub", "Public", "ClaudeVideoEditor"),
+    "Token-Lens": os.path.join(_home, ".gemini", "mcp", "token-lens"),
 }
 
 

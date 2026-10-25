@@ -39,7 +39,7 @@ Universal Memory, yapay zeka ajanlarının oturumlar arasında hafızasını kay
 Universal Memory, tüm verileri standart Markdown formatında ve insan-okunabilir şekilde saklar:
 
 ```text
-C:\Users\Halil Emre\Desktop\GitHub\obsidian\
+~/Desktop/GitHub/obsidian/
 ├── .index/
 │   └── memory_v2.sqlite                # FTS5 arama veri tabanı (otomatik üretilir)
 │
