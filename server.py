@@ -32,6 +32,15 @@ TOOLS = [
                     "type": "integer",
                     "description": "Dönecek maksimum sonuç sayısı (varsayılan: 5).",
                     "default": 5
+                },
+                "as_of": {
+                    "type": "string",
+                    "description": "Zaman yolculuğu: ISO tarih/saat. O anda GEÇERLİ olan kayıtları döndürür (varsayılan: şimdi)."
+                },
+                "include_invalid": {
+                    "type": "boolean",
+                    "description": "true ise geçersiz kılınmış (superseded) kayıtlar da döner (tarihçe).",
+                    "default": False
                 }
             },
             "required": ["query"]
@@ -78,9 +87,59 @@ TOOLS = [
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Etiketler (örn. ['logging', 'performance'])."
-                }
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": "true ise tekrar (duplicate) tespitine rağmen yaz.",
+                    "default": False
+                },
+                "agent_id": {"type": "string", "description": "Kapsam: kaydı üreten/yalnız onun kullanacağı ajan."},
+                "run_id": {"type": "string", "description": "Kapsam: oturum/çalıştırma kimliği."}
             },
             "required": ["project", "type", "title", "content"]
+        }
+    },
+    {
+        "name": "memory_capture",
+        "description": "Hızlı tek satırlık yakalama (yakala). Önek türü belirler: 'karar:', 'kural:', 'ders:', 'olmadı:' (negatif bilgi); öneksiz = karar. Doğrudan canonical yazılır; tekrar/çelişki denetlenir, çelişen eski kayıt geçersiz kılınır (silinmez).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {"type": "string", "description": "Proje adı."},
+                "text": {"type": "string", "description": "Tek satırlık not (örn. 'olmadı: FTS tabanlı dedup 500ms üstüne çıktı')."},
+                "tags": {"type": "array", "items": {"type": "string"}},
+                "agent_id": {"type": "string"},
+                "run_id": {"type": "string"}
+            },
+            "required": ["project", "text"]
+        }
+    },
+    {
+        "name": "memory_supersede",
+        "description": "Eski kaydı geçersiz kıl: valid_until kapatılır, superseded_by yeni kayda bağlanır. Kayıt silinmez, zaman çizelgesi korunur.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "old_id": {"type": "string", "description": "Geçersiz kılınacak kayıt."},
+                "new_id": {"type": "string", "description": "Yerine geçen kayıt."},
+                "when": {"type": "string", "description": "Opsiyonel ISO zaman (varsayılan: şimdi)."}
+            },
+            "required": ["old_id", "new_id"]
+        }
+    },
+    {
+        "name": "memory_context",
+        "description": "OpenCode/yerel modeller için tek kompakt bağlam paketi: yalnızca geçerli (invalidation görmemiş) kural, karar, ders, negatif bilgi ve son handoff'taki açık işler; sorguya göre sıralanır, karakter bütçesine sığdırılır.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {"type": "string"},
+                "query": {"type": "string", "description": "İlgililik için görev/konu metni."},
+                "max_chars": {"type": "integer", "default": 3000},
+                "as_of": {"type": "string", "description": "Opsiyonel zaman yolculuğu."},
+                "agent_id": {"type": "string"}
+            },
+            "required": ["project"]
         }
     },
     {
@@ -144,7 +203,7 @@ def handle_request(req: Dict[str, Any]) -> Dict[str, Any]:
                 },
                 "serverInfo": {
                     "name": "universal-memory",
-                    "version": "1.0.0"
+                    "version": "2.0.0"
                 }
             }
         }
@@ -170,7 +229,8 @@ def handle_request(req: Dict[str, Any]) -> Dict[str, Any]:
                 q = args.get("query", "")
                 proj = args.get("project")
                 lim = args.get("limit", 5)
-                res = memory_engine.memory_search(q, project=proj, limit=lim, mode=args.get("mode", "hybrid"))
+                res = memory_engine.memory_search(q, project=proj, limit=lim, mode=args.get("mode", "hybrid"),
+                                                 as_of=args.get("as_of"), include_invalid=bool(args.get("include_invalid", False)))
                 text_out = json.dumps(res, ensure_ascii=False, indent=2)
 
             elif tool_name == "memory_get":
@@ -187,8 +247,25 @@ def handle_request(req: Dict[str, Any]) -> Dict[str, Any]:
                 title = args.get("title", "")
                 content = args.get("content", "")
                 tags = args.get("tags", [])
-                res = memory_engine.memory_propose(proj, rtype, title, content, tags)
+                res = memory_engine.memory_propose(proj, rtype, title, content, tags, force=bool(args.get("force", False)),
+                                                   agent_id=args.get("agent_id", ""), run_id=args.get("run_id", ""))
                 text_out = json.dumps(res, ensure_ascii=False, indent=2)
+
+            elif tool_name == "memory_capture":
+                res = memory_engine.quick_capture(args.get("project", ""), args.get("text", ""), args.get("tags", []),
+                                                  agent_id=args.get("agent_id", ""), run_id=args.get("run_id", ""))
+                text_out = json.dumps(res, ensure_ascii=False, indent=2)
+
+            elif tool_name == "memory_supersede":
+                res = memory_engine.memory_supersede(args.get("old_id", ""), args.get("new_id", ""), args.get("when"))
+                text_out = json.dumps(res, ensure_ascii=False, indent=2)
+
+            elif tool_name == "memory_context":
+                import context_injector
+                res = context_injector.build_context(args.get("project", ""), args.get("query", ""),
+                                                     int(args.get("max_chars", 3000)), args.get("as_of"),
+                                                     args.get("agent_id", ""))
+                text_out = res["text"]
 
             elif tool_name == "memory_commit":
                 rid = args.get("record_id", "")

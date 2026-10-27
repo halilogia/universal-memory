@@ -40,3 +40,20 @@ sequenceDiagram
 ## 🛡️ Dokunulmaz Kurallar
 1. **İki Aşamalı Yazma Güvencesi:** Ajanlar doğrudan kalıcı hafızaya körlemesine yazamaz; önce `propose` ile teklif edilir, doğrulandıktan sonra `commit` edilir.
 2. **Kişisel Veri ve Gizlilik:** API anahtarları, şifreler ve oturum tokenları bellek indeksine kaydedilemez.
+
+## ⏳ Bi-Temporal Model, Çelişki Çözümü ve Bağlam (v2.0)
+
+| Kavram | Alan / Modül | Davranış |
+|---|---|---|
+| Geçerlilik zamanı | `valid_from` .. `valid_until` | `[from, until)` yarı açık; boş uç = açık. Alanı olmayan kayıt (sohbet) her zaman geçerli |
+| İşlem zamanı | `ingestion_time`, `source_event_time` | Sistemin öğrendiği an / olayın gerçekleştiği an |
+| Geçersiz kılma | `superseded_by`, `status: superseded`, `- supersedes: [[id]]` | Silme yok; zincir korunur |
+| Zaman yolculuğu | `memory_search(as_of, include_invalid)` | Varsayılan: yalnızca şimdi geçerli olanlar |
+| Çelişki çözümü | `conflict_resolver.analyze` | `reject_duplicate` / `supersede_candidates` / `create` |
+| Hızlı yakalama | `quick_capture` | Önek → tür; canonical; çelişen eski kayıt anında kapanır |
+| Damıtma | `distillation/worker.py` | Regex (negatif/karar/kural/görev) + opsiyonel yerel model |
+| Bağlam paketi | `context_injector.build_context` | Geçerli kartlar, sorgu ilgisi, karakter bütçesi, agent_id kapsamı |
+
+Akış: `memory_propose` → `conflict_resolver` (duplicate ise dur) → dosya `contradicts` bağlarıyla yazılır → `memory_commit` → çelişen canonical kayıtlar `bitemporal.supersede` ile kapatılır → indeks senkronize.
+
+Tasarım notları: Graphiti'den bi-temporal pencere ve geçersiz kılma, Mem0'dan kapsam (`agent_id`/`run_id`) ve ekleme anında ADD/UPDATE/NONE kararı alındı. Çözücü deterministiktir (gömme/LLM yok); semantik benzerlik gerekirse `classify` arkasına eklenebilir. Avenox Beyin transkript damıtmaz (ajan kendi not yazar, `yakala` içerik yakalar); transkript damıtma bu repoda `worker.py` ile yapılır.

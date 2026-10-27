@@ -94,8 +94,12 @@ def connect() -> sqlite3.Connection:
         CREATE INDEX IF NOT EXISTS idx_edges_target ON memory_edges(target_id, relation);
         CREATE INDEX IF NOT EXISTS idx_edges_source ON memory_edges(source_id, relation);
     """)
-    if "tzlocal" not in [r[1] for r in conn.execute("PRAGMA table_info(files)")]:
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(files)")]
+    if "tzlocal" not in cols:
         conn.execute("ALTER TABLE files ADD COLUMN tzlocal INTEGER DEFAULT 0")
+    for extra in ("valid_from", "valid_until", "source_event_time", "ingestion_time", "superseded_by", "agent_id", "run_id"):
+        if extra not in cols:
+            conn.execute(f"ALTER TABLE files ADD COLUMN {extra} TEXT DEFAULT ''")
     conn.commit()
     return conn
 
@@ -166,6 +170,9 @@ def _file_meta(rel: str, lines: List[str], fm: Dict[str, str], st: os.stat_resul
         "date": date, "tzlocal": tzlocal, "rtype": rtype, "rid": fm.get("id", ""), "status": fm.get("status", "canonical"),
         "source_commit": fm.get("source_commit", ""), "tags": fm.get("tags", ""),
         "created_at": fm.get("created_at") or iso, "updated_at": fm.get("updated_at") or fm.get("created_at") or iso,
+        "valid_from": fm.get("valid_from", ""), "valid_until": fm.get("valid_until", ""),
+        "source_event_time": fm.get("source_event_time", ""), "ingestion_time": fm.get("ingestion_time", ""),
+        "superseded_by": fm.get("superseded_by", ""), "agent_id": fm.get("agent_id", ""), "run_id": fm.get("run_id", ""),
     }
 
 
@@ -213,7 +220,7 @@ def _speaker_ts(heading: str) -> Tuple[str, str]:
 
 
 _WIKILINK_RE = re.compile(r"\[\[([^\]\|#]+)(?:#[^\]\|]+)?(?:\|[^\]]+)?\]\]")
-_TYPED_EDGE_RE = re.compile(r"^\s*-\s*(supersedes|depends_on|evidenced_by|related_to|applies_to):\s*\[\[([^\]\|#]+)", re.IGNORECASE)
+_TYPED_EDGE_RE = re.compile(r"^\s*-\s*(supersedes|contradicts|depends_on|evidenced_by|related_to|applies_to):\s*\[\[([^\]\|#]+)", re.IGNORECASE)
 
 
 def _extract_edges(source_id: str, lines: List[str]) -> List[Tuple[str, str, str]]:
@@ -257,10 +264,12 @@ def _index_file(conn: sqlite3.Connection, abs_path: str, rel: str, st: os.stat_r
 
     conn.execute(
         """INSERT OR REPLACE INTO files(path, mtime, size, project, pnorm, agent, session, title, date, rtype, rid,
-           status, source_commit, tags, created_at, updated_at, tzlocal) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           status, source_commit, tags, created_at, updated_at, tzlocal, valid_from, valid_until, source_event_time,
+           ingestion_time, superseded_by, agent_id, run_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (rel, st.st_mtime, st.st_size, meta["project"], meta["pnorm"], meta["agent"], meta["session"], meta["title"],
          meta["date"], meta["rtype"], meta["rid"], meta["status"], meta["source_commit"], meta["tags"],
-         meta["created_at"], meta["updated_at"], meta["tzlocal"]),
+         meta["created_at"], meta["updated_at"], meta["tzlocal"], meta["valid_from"], meta["valid_until"],
+         meta["source_event_time"], meta["ingestion_time"], meta["superseded_by"], meta["agent_id"], meta["run_id"]),
     )
 
     # Wikilinks & Graph node/edge indexing
@@ -431,9 +440,12 @@ def _run(conn: sqlite3.Connection, fts: str, pnorm: Optional[str], cands: int) -
         return []
 
 
-def search(query: str, project: Optional[str] = None, limit: int = 5, mode: Optional[str] = None) -> List[Dict[str, Any]]:
-    """Fast, message-level FTS5 BM25 search with Turkish folding and AND -> OR fallback."""
+def search(query: str, project: Optional[str] = None, limit: int = 5, mode: Optional[str] = None,
+           as_of: Optional[str] = None, include_invalid: bool = False) -> List[Dict[str, Any]]:
+    """Fast, message-level FTS5 BM25 search with Turkish folding and AND -> OR fallback.
+    Bi-temporal: by default only records valid now (or at ``as_of``) are returned; ``include_invalid`` returns history."""
     import memory_engine
+    from bitemporal import record_is_valid
     ensure_fresh()
     phrases, toks = _query_parts(query)
     if not phrases and not toks:
@@ -481,6 +493,8 @@ def search(query: str, project: Optional[str] = None, limit: int = 5, mode: Opti
             f = file_of(r["path"])
             if f is None or per_file.get(r["path"], 0) >= 2:
                 continue
+            if not include_invalid and not record_is_valid(f, as_of):
+                continue
             per_file[r["path"]] = per_file.get(r["path"], 0) + 1
             text = _read_lines(r["path"], r["line"], r["endline"])
             snip, off = _snippet(text, stems)
@@ -505,6 +519,9 @@ def search(query: str, project: Optional[str] = None, limit: int = 5, mode: Opti
                 "match_line": r["line"] + off,
                 "path": os.path.join(_vault_root(), r["path"]),
                 "status": f["status"],
+                "valid_from": f["valid_from"],
+                "valid_until": f["valid_until"],
+                "superseded_by": f["superseded_by"],
                 "source_commit": sc,
                 "head_commit": head,
                 "stale_warning": stale,
@@ -591,6 +608,9 @@ def _record(conn: sqlite3.Connection, f: sqlite3.Row, start: int, end: int, extr
         "agent": f["agent"], "session": f["session"], "date": f["date"],
         "source_commit": f["source_commit"], "head_commit": head, "stale_warning": stale,
         "validity": validity,
+        "valid_from": f["valid_from"], "valid_until": f["valid_until"], "source_event_time": f["source_event_time"],
+        "ingestion_time": f["ingestion_time"], "superseded_by": f["superseded_by"],
+        "agent_id": f["agent_id"], "run_id": f["run_id"],
         "relations": {
             "outgoing": outgoing,
             "backlinks": backlinks

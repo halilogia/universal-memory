@@ -230,10 +230,12 @@ def _legacy_sync_vault() -> int:
     return indexed_count
 
 
-def memory_search(query: str, project: Optional[str] = None, limit: int = 5, mode: Optional[str] = None) -> List[Dict[str, Any]]:
-    """v2: message-level fast FTS5 BM25 search with Turkish folding and AND->OR fallback (memory_index.py)."""
+def memory_search(query: str, project: Optional[str] = None, limit: int = 5, mode: Optional[str] = None,
+                  as_of: Optional[str] = None, include_invalid: bool = False) -> List[Dict[str, Any]]:
+    """v2: message-level fast FTS5 BM25 search with Turkish folding and AND->OR fallback (memory_index.py).
+    Bi-temporal: only records valid now / at ``as_of`` unless ``include_invalid`` (time-travel + history)."""
     import memory_index
-    return memory_index.search(query, project=project, limit=limit, mode=mode)
+    return memory_index.search(query, project=project, limit=limit, mode=mode, as_of=as_of, include_invalid=include_invalid)
 
 
 def _legacy_memory_search(query: str, project: Optional[str] = None, limit: int = 5) -> List[Dict[str, Any]]:
@@ -382,55 +384,131 @@ def _safe_project_dir(project: str, subfolder: str = "") -> str:
     return target
 
 
-def memory_propose(project: str, rtype: str, title: str, content: str, tags: List[str] = []) -> Dict[str, Any]:
-    """Create a new proposal in the memory vault with atomic write and collision protection."""
+def memory_propose(project: str, rtype: str, title: str, content: str, tags: List[str] = [],
+                   force: bool = False, agent_id: str = "", run_id: str = "", source_event_time: str = "",
+                   valid_from: str = "", _status: str = "proposal") -> Dict[str, Any]:
+    """Create a new record with bi-temporal metadata after a duplicate/contradiction check (conflict_resolver).
+
+    Duplicate -> nothing is written (``success: False, duplicate_of``) unless ``force``.
+    Contradiction/update -> written with ``- contradicts: [[old]]`` links; the old record is closed on commit.
+    """
+    import conflict_resolver
+    from bitemporal import now_iso
+
+    resolution = conflict_resolver.analyze(project, rtype, title, content, tags)
+    if resolution["action"] == "reject_duplicate" and not force:
+        return {"success": False, "error": "duplicate", "duplicate_of": resolution["duplicate_of"],
+                "conflicts": resolution["candidates"]}
+
     date_tag = datetime.now().strftime("%Y%m%d-%H%M%S")
     slug = re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')[:35] or "item"
     rec_id = f"{rtype}-{slug}-{date_tag}"
 
     subfolder = "decisions" if rtype == "decision" else ("lessons" if rtype == "lesson" else "")
     target_dir = _safe_project_dir(project, subfolder)
-    target_file = os.path.join(target_dir, f"{rec_id.upper()}.md")
 
     head_commit = _get_git_commit(project) or ""
     now_str = datetime.now().isoformat()
+    ingestion = now_iso()
     tags_yaml = "[" + ", ".join(tags) + "]" if tags else "[]"
+    scope_yaml = (f"agent_id: {agent_id}\n" if agent_id else "") + (f"run_id: {run_id}\n" if run_id else "")
+    links = "".join(f"\n- contradicts: [[{cid}]]" for cid in resolution["supersedes"])
 
-    markdown = f"""---
-id: {rec_id}
+    def render(rid: str) -> str:
+        return f"""---
+id: {rid}
 type: {rtype}
 project: {project}
 title: {title}
-status: proposal
+status: {_status}
 source_commit: {head_commit}
 tags: {tags_yaml}
 created_at: {now_str}
----
+ingestion_time: {ingestion}
+valid_from: {valid_from or ingestion}
+valid_until:
+source_event_time: {source_event_time or ingestion}
+superseded_by:
+{scope_yaml}---
 
 # {title}
 
 {content}
+{links}
 """
 
     # Atomic create: fail if already exists to prevent accidental overwrite
+    target_file = os.path.join(target_dir, f"{rec_id.upper()}.md")
     try:
         with open(target_file, "x", encoding="utf-8") as f:
-            f.write(markdown)
+            f.write(render(rec_id))
     except FileExistsError:
         # Fallback with microseconds if collision occurs
         rec_id = f"{rec_id}-{datetime.now().microsecond}"
         target_file = os.path.join(target_dir, f"{rec_id.upper()}.md")
         with open(target_file, "w", encoding="utf-8") as f:
-            f.write(markdown)
+            f.write(render(rec_id))
 
     sync_vault()
-    return {
+    result = {
         "success": True,
         "id": rec_id,
         "filepath": target_file,
-        "status": "proposal",
-        "source_commit": head_commit
+        "status": _status,
+        "source_commit": head_commit,
+        "conflict_action": resolution["action"],
+        "contradicts": resolution["supersedes"],
+        "conflicts": resolution["candidates"],
     }
+    if resolution["action"] == "reject_duplicate":
+        result["duplicate_of"] = resolution["duplicate_of"]  # forced through
+    return result
+
+
+_CAPTURE_RULES = [
+    ("lesson", ["negative"], re.compile(r"^(olmad[iı]|[cç]al[iı][sş]mad[iı]|failed|fail|negatif|denedim)\s*[:\-]\s*", re.I)),
+    ("lesson", [], re.compile(r"^(ders|lesson|hata|bug)\s*[:\-]\s*", re.I)),
+    ("convention", [], re.compile(r"^(kural|rule|convention)\s*[:\-]\s*", re.I)),
+    ("decision", [], re.compile(r"^(karar|decision)\s*[:\-]\s*", re.I)),
+]
+
+
+def quick_capture(project: str, text: str, tags: List[str] = [], agent_id: str = "", run_id: str = "") -> Dict[str, Any]:
+    """One-line capture (Avenox ``yakala``). Prefix picks the type: ``karar:`` / ``kural:`` / ``ders:`` / ``olmadı:``
+    (negative knowledge); no prefix -> decision. Stored directly as canonical (the user captured it deliberately),
+    still duplicate/contradiction checked; contradicted canonical records are superseded immediately."""
+    line = " ".join((text or "").split())
+    rtype, extra_tags, body = "decision", [], line
+    for t, et, rx in _CAPTURE_RULES:
+        m = rx.match(line)
+        if m:
+            rtype, extra_tags, body = t, et, line[m.end():].strip()
+            break
+    if not body:
+        return {"success": False, "error": "Empty capture"}
+    title = body if len(body) <= 80 else body[:77].rstrip() + "..."
+    res = memory_propose(project, rtype, title, body, list(tags) + extra_tags + ["quick-capture"],
+                         agent_id=agent_id, run_id=run_id, _status="canonical")
+    if res.get("success"):
+        res["superseded"] = [c["superseded"] for c in
+                             (_close_contradicted(res["id"], old) for old in res.get("contradicts", [])) if c]
+    return res
+
+
+def _close_contradicted(new_id: str, old_id: str) -> Optional[Dict[str, Any]]:
+    """Supersede ``old_id`` by ``new_id`` when the old record is canonical (proposals are left alone)."""
+    from bitemporal import supersede
+    old = memory_get(old_id)
+    if not old or (old.get("status") or "").lower() != "canonical":
+        return None
+    out = supersede(old_id, new_id)
+    return out if out.get("success") else None
+
+
+def memory_supersede(old_id: str, new_id: str, when: Optional[str] = None) -> Dict[str, Any]:
+    """Explicitly close ``old_id`` (valid_until=when) and link it to ``new_id``; history is preserved."""
+    from bitemporal import supersede
+    return supersede(old_id, new_id, when)
 
 
 def memory_commit(record_id: str) -> Dict[str, Any]:
@@ -459,8 +537,13 @@ def memory_commit(record_id: str) -> Dict[str, Any]:
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(new_text)
 
+    superseded = []
+    for old_id in re.findall(r"^-\s*contradicts:\s*\[\[([^\]|#]+)", new_text, flags=re.MULTILINE):
+        closed = _close_contradicted(rec.get("id") or record_id, old_id.strip())
+        if closed:
+            superseded.append(closed["superseded"])
     sync_vault()
-    return {"success": True, "id": record_id, "status": "canonical"}
+    return {"success": True, "id": record_id, "status": "canonical", "superseded": superseded}
 
 
 def memory_handoff(project: str, summary: str, decisions: List[str] = [], unresolved: List[str] = []) -> Dict[str, Any]:
@@ -485,6 +568,8 @@ title: Oturum Devri (Handoff) - {date_slug}
 status: canonical
 source_commit: {head_commit}
 created_at: {now_str}
+ingestion_time: {now_str}
+valid_from: {now_str}
 ---
 
 # 🔄 Oturum Devri (Session Handoff): {project}
