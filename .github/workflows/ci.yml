@@ -1,0 +1,38 @@
+name: Universal Memory CI & Quality Gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python Unit Tests & Security Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install mcp pydantic
+
+      - name: Run Unit Tests
+        run: python -m unittest discover tests
+
+      - name: GravityGuard Secret Leak Check
+        run: |
+          if git grep -EI "sk-ant-|ghp_|AKIA[0-9A-Z]{16}" -- ':!*.lock'; then
+            echo "::error::Potential secret leak detected!"
+            exit 1
+          fi
