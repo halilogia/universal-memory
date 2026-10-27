@@ -32,7 +32,7 @@ jobs:
 
       - name: GravityGuard Secret Leak Check
         run: |
-          if git grep -EI "sk-ant-|ghp_|AKIA[0-9A-Z]{16}" -- ':!*.lock'; then
+          if git grep -EI "sk-ant-|ghp_|AKIA[0-9A-Z]{16}" -- ':!*.lock' ':!.github/workflows/*'; then
             echo "::error::Potential secret leak detected!"
             exit 1
           fi
