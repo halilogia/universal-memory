@@ -425,14 +425,20 @@ def _snippet(text: str, stems: List[str], width: int = 300) -> Tuple[str, int]:
     return snip.replace("\n", " "), text[:first].count("\n")
 
 
-def _run(conn: sqlite3.Connection, fts: str, pnorm: Optional[str], cands: int) -> List[sqlite3.Row]:
+def _run(conn: sqlite3.Connection, fts: str, pnorm: Optional[str], cands: int, order_by: Optional[str] = None) -> List[sqlite3.Row]:
     sql = ("SELECT rowid, path, line, endline, date, ts, speaker, "
            "bm25(chunks, 1.0, 3.0, 2.0, 0.5, 0.5) AS rank FROM chunks WHERE chunks MATCH ?")
     params: List[Any] = [fts]
     if pnorm:
         sql += " AND pnorm LIKE ?"
         params.append(f"%{pnorm}%")
-    sql += " ORDER BY rank LIMIT ?"
+    ob = (order_by or "").lower().strip()
+    if ob == "time_asc":
+        sql += " ORDER BY date ASC, ts ASC, line ASC LIMIT ?"
+    elif ob == "time_desc":
+        sql += " ORDER BY date DESC, ts DESC, line DESC LIMIT ?"
+    else:
+        sql += " ORDER BY rank LIMIT ?"
     params.append(cands)
     try:
         return conn.execute(sql, params).fetchall()
@@ -441,9 +447,13 @@ def _run(conn: sqlite3.Connection, fts: str, pnorm: Optional[str], cands: int) -
 
 
 def search(query: str, project: Optional[str] = None, limit: int = 5, mode: Optional[str] = None,
-           as_of: Optional[str] = None, include_invalid: bool = False) -> List[Dict[str, Any]]:
+           as_of: Optional[str] = None, include_invalid: bool = False,
+           order_by: Optional[str] = None, surround: int = 0,
+           context_lines: Optional[int] = None) -> List[Dict[str, Any]]:
     """Fast, message-level FTS5 BM25 search with Turkish folding and AND -> OR fallback.
-    Bi-temporal: by default only records valid now (or at ``as_of``) are returned; ``include_invalid`` returns history."""
+    Bi-temporal: by default only records valid now (or at ``as_of``) are returned; ``include_invalid`` returns history.
+    order_by: 'relevance' (default BM25), 'time_asc', or 'time_desc'.
+    surround / context_lines: optional integer lines of surrounding context included in 'context'."""
     import memory_engine
     from bitemporal import record_is_valid
     ensure_fresh()
@@ -457,9 +467,14 @@ def search(query: str, project: Optional[str] = None, limit: int = 5, mode: Opti
     and_q = " ".join([f'"{p}"' for p in phrases] + [f'"{_stem(t)}"*' for t in toks])
     or_q = " OR ".join([f'"{p}"' for p in phrases] + [f'"{_stem(t)}"*' for t in toks])
 
+    ob = (order_by or "").lower().strip()
+    is_time_sort = ob in ("time_asc", "time_desc")
+    ctx = context_lines if context_lines is not None else surround
+    ctx = max(0, int(ctx or 0))
+
     conn = connect()
     try:
-        cands = max(limit * 8, 40)
+        cands = max(limit * 20, 100) if is_time_sort else max(limit * 8, 40)
         files: Dict[str, Optional[sqlite3.Row]] = {}
 
         def file_of(rel: str) -> Optional[sqlite3.Row]:
@@ -467,25 +482,33 @@ def search(query: str, project: Optional[str] = None, limit: int = 5, mode: Opti
                 files[rel] = conn.execute("SELECT * FROM files WHERE path = ?", (rel,)).fetchone()
             return files[rel]
 
-        # keyword side (BM25): every all-words match first, then the any-word fallbacks
+        # keyword side: execute query with requested sort
         kw: List[Dict[str, Any]] = []
-        and_rows = _run(conn, and_q, pnorm, cands)
+        and_rows = _run(conn, and_q, pnorm, cands, order_by=ob)
         seen_ids = {(r["path"], r["line"]) for r in and_rows}
         or_rows: List[sqlite3.Row] = []
         if len(and_rows) < limit * 2 and len(toks) + len(phrases) > 1:
-            for r in _run(conn, or_q, pnorm, cands):
+            for r in _run(conn, or_q, pnorm, cands, order_by=ob):
                 if (r["path"], r["line"]) not in seen_ids:
                     or_rows.append(r)
-        for block in (and_rows, or_rows):
-            part: List[Tuple[float, Dict[str, Any]]] = []
-            for r in block:
-                f = file_of(r["path"])
-                if f is None:
-                    continue
-                penalty = 1.5 if f["rtype"] == "readme" else 0.0
-                part.append((r["rank"] + penalty, dict(r)))
-            part.sort(key=lambda x: x[0])
-            kw.extend(d for _, d in part)
+
+        if is_time_sort:
+            all_rows = list(and_rows) + list(or_rows)
+            def time_key(r: sqlite3.Row) -> tuple[str, str, int]:
+                return (r["date"] or "", r["ts"] or "", r["line"] or 0)
+            all_rows.sort(key=time_key, reverse=(ob == "time_desc"))
+            kw = [dict(r) for r in all_rows]
+        else:
+            for block in (and_rows, or_rows):
+                part: List[Tuple[float, Dict[str, Any]]] = []
+                for r in block:
+                    f = file_of(r["path"])
+                    if f is None:
+                        continue
+                    penalty = 1.5 if f["rtype"] == "readme" else 0.0
+                    part.append((r["rank"] + penalty, dict(r)))
+                part.sort(key=lambda x: x[0])
+                kw.extend(d for _, d in part)
 
         results: List[Dict[str, Any]] = []
         per_file: Dict[str, int] = {}
@@ -504,7 +527,8 @@ def search(query: str, project: Optional[str] = None, limit: int = 5, mode: Opti
             if sc and f["project"] and f["project"] != "global":
                 head = memory_engine._get_git_commit(f["project"])
                 stale = bool(head and head != sc)
-            results.append({
+
+            res_item = {
                 "id": f"{r['path'].replace(os.sep, '/')}#{r['line']}",
                 "project": f["project"],
                 "type": f["rtype"],
@@ -525,7 +549,14 @@ def search(query: str, project: Optional[str] = None, limit: int = 5, mode: Opti
                 "source_commit": sc,
                 "head_commit": head,
                 "stale_warning": stale,
-            })
+            }
+            if ctx > 0:
+                s_start = max(1, r["line"] - ctx)
+                s_end = r["endline"] + ctx
+                res_item["context"] = _read_lines(r["path"], s_start, s_end)
+                res_item["context_range"] = f"{s_start}-{s_end}"
+
+            results.append(res_item)
             if len(results) >= limit:
                 break
         return results
@@ -536,18 +567,28 @@ def search(query: str, project: Optional[str] = None, limit: int = 5, mode: Opti
 # --------------------------------------------------------------------------- get
 
 def _file_row(conn: sqlite3.Connection, ref: str) -> Optional[sqlite3.Row]:
-    ref = ref.replace("/", os.sep)
+    ref_norm = ref.replace("/", os.sep).replace("\\", os.sep)
     root = _vault_root()
-    if os.path.isabs(ref):
+    if os.path.isabs(ref_norm):
         try:
-            ref = os.path.relpath(ref, root)
+            ref_norm = os.path.relpath(ref_norm, root)
         except ValueError:
-            return None
-    row = conn.execute("SELECT * FROM files WHERE path = ?", (ref,)).fetchone()
+            pass
+    row = conn.execute("SELECT * FROM files WHERE path = ?", (ref_norm,)).fetchone()
     if row:
         return row
-    if not ref.lower().endswith(".md"):
-        row = conn.execute("SELECT * FROM files WHERE path = ?", (ref + ".md",)).fetchone()
+    if not ref_norm.lower().endswith(".md"):
+        row = conn.execute("SELECT * FROM files WHERE path = ?", (ref_norm + ".md",)).fetchone()
+        if row:
+            return row
+    row = conn.execute("SELECT * FROM files WHERE replace(path, '\\', '/') = ? OR replace(path, '/', '\\') = ?",
+                       (ref.replace("\\", "/"), ref.replace("/", "\\"))).fetchone()
+    if row:
+        return row
+    base = os.path.basename(ref_norm)
+    if base:
+        row = conn.execute("SELECT * FROM files WHERE path LIKE ? OR lower(path) LIKE ? ORDER BY date DESC, mtime DESC LIMIT 1",
+                           (f"%{os.sep}{base}", f"%{os.sep}{base.lower()}")).fetchone()
         if row:
             return row
     return None
@@ -624,8 +665,9 @@ def _record(conn: sqlite3.Connection, f: sqlite3.Row, start: int, end: int, extr
     return out
 
 
-def get(record_id: str) -> Optional[Dict[str, Any]]:
-    """Resolve a frontmatter id, ``path#line`` / ``path#a:b`` chunk id, a path, or a legacy bare name (returns matches)."""
+def get(record_id: str, surround: int = 0) -> Optional[Dict[str, Any]]:
+    """Resolve a frontmatter id, ``path#line`` / ``path#a:b`` chunk id, a path, or a legacy bare name (returns matches).
+    Accepts ``surround`` to expand the line range for chunk lookups."""
     ensure_fresh()
     rid = (record_id or "").strip()
     if not rid:
@@ -636,19 +678,38 @@ def get(record_id: str) -> Optional[Dict[str, Any]]:
         if f:
             return _record(conn, f, 1, 10 ** 6)
 
-        m = re.match(r"^(.*?)#(\d+)(?::(\d+))?$", rid)
+        m = re.match(r"^(.*?)#(?:L)?(\d+)(?:[-:](?:L)?(\d+))?$", rid, re.IGNORECASE)
         if m:
-            f = _file_row(conn, m.group(1))
-            if f is None:
-                f = conn.execute("SELECT * FROM files WHERE path LIKE ? ORDER BY date DESC LIMIT 1", (f"%{m.group(1).replace('/', os.sep)}%",)).fetchone()
+            base_ref = m.group(1).strip()
+            line = int(m.group(2))
+            end_line = int(m.group(3)) if m.group(3) else None
+
+            f = _file_row(conn, base_ref)
+            if f is None and base_ref:
+                f = conn.execute("SELECT * FROM files WHERE rid = ?", (base_ref,)).fetchone()
+            if f is None and base_ref:
+                f = conn.execute(
+                    "SELECT * FROM files WHERE path LIKE ? OR replace(path, '\\', '/') LIKE ? ORDER BY date DESC LIMIT 1",
+                    (f"%{base_ref.replace('/', os.sep)}%", f"%{base_ref.replace(os.sep, '/')}%")
+                ).fetchone()
             if f is None:
                 return None
-            line = int(m.group(2))
-            if m.group(3):
-                return _record(conn, f, line, int(m.group(3)))
-            c = conn.execute("SELECT line, endline FROM chunks WHERE path = ? AND line <= ? AND endline >= ? LIMIT 1",
-                             (f["path"], line, line)).fetchone()
-            return _record(conn, f, c["line"] if c else line, c["endline"] if c else line + 60)
+
+            if end_line is not None:
+                s = max(1, line - surround) if surround else line
+                e = end_line + surround if surround else end_line
+                return _record(conn, f, s, e)
+
+            c = conn.execute(
+                "SELECT line, endline FROM chunks WHERE path = ? AND line <= ? AND endline >= ? LIMIT 1",
+                (f["path"], line, line)
+            ).fetchone()
+            start = c["line"] if c else max(1, line - 5)
+            end = c["endline"] if c else line + 60
+            if surround:
+                start = max(1, start - surround)
+                end = end + surround
+            return _record(conn, f, start, end)
 
         f = _file_row(conn, rid)
         if f:

@@ -231,11 +231,15 @@ def _legacy_sync_vault() -> int:
 
 
 def memory_search(query: str, project: Optional[str] = None, limit: int = 5, mode: Optional[str] = None,
-                  as_of: Optional[str] = None, include_invalid: bool = False) -> List[Dict[str, Any]]:
+                  as_of: Optional[str] = None, include_invalid: bool = False,
+                  order_by: Optional[str] = None, surround: int = 0,
+                  context_lines: Optional[int] = None) -> List[Dict[str, Any]]:
     """v2: message-level fast FTS5 BM25 search with Turkish folding and AND->OR fallback (memory_index.py).
     Bi-temporal: only records valid now / at ``as_of`` unless ``include_invalid`` (time-travel + history)."""
     import memory_index
-    return memory_index.search(query, project=project, limit=limit, mode=mode, as_of=as_of, include_invalid=include_invalid)
+    return memory_index.search(query, project=project, limit=limit, mode=mode, as_of=as_of,
+                               include_invalid=include_invalid, order_by=order_by,
+                               surround=surround, context_lines=context_lines)
 
 
 def _legacy_memory_search(query: str, project: Optional[str] = None, limit: int = 5) -> List[Dict[str, Any]]:
@@ -323,10 +327,10 @@ def _legacy_memory_search(query: str, project: Optional[str] = None, limit: int 
     return results
 
 
-def memory_get(record_id: str) -> Optional[Dict[str, Any]]:
+def memory_get(record_id: str, surround: int = 0) -> Optional[Dict[str, Any]]:
     """v2: resolve a frontmatter id, 'path#line' / 'path#a:b' chunk id or a path (memory_index.py)."""
     import memory_index
-    return memory_index.get(record_id)
+    return memory_index.get(record_id, surround=surround)
 
 
 def _legacy_memory_get(record_id: str) -> Optional[Dict[str, Any]]:

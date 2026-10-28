@@ -1,1 +1,53 @@
-{"name":"memory_search","description":"Obsidian kasasındaki TÜM sohbetleri (Antigravity, ChatGPT, Claude Code) ve kayıtlı kararları MESAJ düzeyinde arar (FTS5 BM25, Türkçe harf katlamalı: 'Kor Saat' = 'Kör Saat'). Her sonuç: id ('dosya.md#satır'), kim yazdı (speaker), ne zaman (when; yerel saat), ajan, oturum, eşleşen satır ve ==vurgulu== özet döner. Tüm kelimeler bulunmazsa kelimelerden herhangi biriyle yedek arama yapar; \"çift tırnak\" tam ifade arar. Her sorguda dizini taze tutar. Tam metin için memory_get(id).","parameters":{"properties":{"limit":{"default":5,"description":"Dönecek maksimum sonuç sayısı (varsayılan: 5).","type":"integer"},"project":{"description":"Opsiyonel proje filtresi = kasanın üst klasör adı (örn. 'GrandStrategy3D', 'GravityGuard', 'SpatialAIOrchestration3D'); büyük/küçük harf ve alt çizgiye duyarsız, kısmi eşleşir.","type":"string"},"query":{"description":"Aranacak anahtar kelimeler (örn. 'LOD zoom', 'uniform buffer', 'service worker'). Birkaç ayırt edici kelime en iyisidir; \"tırnak\" içi tam ifade arar.","type":"string"}},"required":["query"],"type":"object"}}
+{
+  "name": "memory_search",
+  "description": "Obsidian kasasındaki TÜM sohbetleri (Antigravity, ChatGPT, Claude Code) ve kayıtlı kararları MESAJ düzeyinde arar (FTS5 BM25, Türkçe harf katlamalı: 'Kor Saat' = 'Kör Saat'). Her sonuç: id ('dosya.md#satır'), kim yazdı (speaker), ne zaman (when; yerel saat), ajan, oturum, eşleşen satır ve ==vurgulu== özet döner. Tüm kelimeler bulunmazsa kelimelerden herhangi biriyle yedek arama yapar; \"çift tırnak\" tam ifade arar. Her sorguda dizini taze tutar. Tam metin için memory_get(id).",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "Aranacak anahtar kelimeler (örn. 'Kör Saat Sayacı', 'service worker InvalidStateError'). Birkaç ayırt edici kelime en iyisidir; \"tırnak\" içi tam ifade arar."
+      },
+      "project": {
+        "type": "string",
+        "description": "Opsiyonel proje filtresi = kasanın üst klasör adı (örn. 'GravityGuard', 'The_Hammer_ve_Godot', 'Antigravity_ve_Yapay_Zeka', 'Windows_ve_Sistem_Araclari'); büyük/küçük harf ve alt çizgiye duyarsız, kısmi eşleşir."
+      },
+      "limit": {
+        "type": "integer",
+        "description": "Dönecek maksimum sonuç sayısı (varsayılan: 5).",
+        "default": 5
+      },
+      "as_of": {
+        "type": "string",
+        "description": "Zaman yolculuğu: ISO tarih/saat. O anda GEÇERLİ olan kayıtları döndürür (varsayılan: şimdi)."
+      },
+      "include_invalid": {
+        "type": "boolean",
+        "description": "true ise geçersiz kılınmış (superseded) kayıtlar da döner (tarihçe).",
+        "default": false
+      },
+      "order_by": {
+        "type": "string",
+        "enum": [
+          "relevance",
+          "time_asc",
+          "time_desc"
+        ],
+        "description": "Sonuç sıralaması: 'relevance' (varsayılan BM25), 'time_asc' (eskiden yeniye kronolojik), 'time_desc' (en yeniden en eskiye).",
+        "default": "relevance"
+      },
+      "surround": {
+        "type": "integer",
+        "description": "Eşleşen mesajın öncesinden ve sonrasından eklenecek çevreleyen satır sayısı (örn. 3 veya 5); asistan yanıtını doğrudan 'context' alanında döner.",
+        "default": 0
+      },
+      "context_lines": {
+        "type": "integer",
+        "description": "surround ile aynı (çevreleyen satır sayısı takma adı)."
+      }
+    },
+    "required": [
+      "query"
+    ]
+  }
+}

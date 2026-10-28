@@ -41,6 +41,21 @@ TOOLS = [
                     "type": "boolean",
                     "description": "true ise geçersiz kılınmış (superseded) kayıtlar da döner (tarihçe).",
                     "default": False
+                },
+                "order_by": {
+                    "type": "string",
+                    "enum": ["relevance", "time_asc", "time_desc"],
+                    "description": "Sonuç sıralaması: 'relevance' (varsayılan BM25), 'time_asc' (eskiden yeniye kronolojik), 'time_desc' (en yeniden en eskiye).",
+                    "default": "relevance"
+                },
+                "surround": {
+                    "type": "integer",
+                    "description": "Eşleşen mesajın öncesinden ve sonrasından eklenecek çevreleyen satır sayısı (örn. 3 veya 5); asistan yanıtını doğrudan 'context' alanında döner.",
+                    "default": 0
+                },
+                "context_lines": {
+                    "type": "integer",
+                    "description": "surround ile aynı (çevreleyen satır sayısı takma adı)."
                 }
             },
             "required": ["query"]
@@ -48,16 +63,28 @@ TOOLS = [
     },
     {
         "name": "memory_get",
-        "description": "Kaydı tam metniyle getirir. record_id: memory_search'ün döndürdüğü 'id' ('klasör/dosya.md#satır' = o mesajın tamamı; '#başlangıç:bitiş' = satır aralığı), kayıtlı karar kimliği (örn. 'decision-...') veya dosya yolu. Çıktıda içerik, speaker/tarih/ajan, durum ve Git commit bilgisi bulunur. Çıplak 'readme' veya '2026-10-16' gibi eski kimlikler birden çok nota denk gelir: en yeni not ve 'matches' listesi döner.",
+        "description": "Kaydı tam metniyle getirir. id / record_id: memory_search'ün döndürdüğü 'id' ('klasör/dosya.md#satır' = o mesajın tamamı; '#başlangıç:bitiş' = satır aralığı), kayıtlı karar kimliği (örn. 'decision-...') veya dosya yolu. Çıktıda içerik, speaker/tarih/ajan, durum ve Git commit bilgisi bulunur. Çıplak 'readme' veya '2026-10-16' gibi eski kimlikler birden çok nota denk gelir: en yeni not ve 'matches' listesi döner.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "record_id": {
                     "type": "string",
                     "description": "Arama sonucundaki 'id' (örn. 'GravityGuard/[...]/2026-10-16.md#864'), kayıtlı karar kimliği veya dosya yolu."
+                },
+                "id": {
+                    "type": "string",
+                    "description": "record_id için takma ad (örn. 'dosya.md#241' veya karar kimliği)."
+                },
+                "surround": {
+                    "type": "integer",
+                    "description": "Opsiyonel çevreleyen satır sayısı (örn. 3 veya 5). Belirtilen satır aralığını genişletir.",
+                    "default": 0
+                },
+                "context_lines": {
+                    "type": "integer",
+                    "description": "surround için takma ad."
                 }
-            },
-            "required": ["record_id"]
+            }
         }
     },
     {
@@ -229,13 +256,21 @@ def handle_request(req: Dict[str, Any]) -> Dict[str, Any]:
                 q = args.get("query", "")
                 proj = args.get("project")
                 lim = args.get("limit", 5)
-                res = memory_engine.memory_search(q, project=proj, limit=lim, mode=args.get("mode", "hybrid"),
-                                                 as_of=args.get("as_of"), include_invalid=bool(args.get("include_invalid", False)))
+                surr = args.get("surround")
+                if surr is None:
+                    surr = args.get("context_lines", 0)
+                res = memory_engine.memory_search(
+                    q, project=proj, limit=lim, mode=args.get("mode", "hybrid"),
+                    as_of=args.get("as_of"), include_invalid=bool(args.get("include_invalid", False)),
+                    order_by=args.get("order_by", "relevance"),
+                    surround=int(surr or 0)
+                )
                 text_out = json.dumps(res, ensure_ascii=False, indent=2)
 
             elif tool_name == "memory_get":
-                rid = args.get("record_id", "")
-                res = memory_engine.memory_get(rid)
+                rid = args.get("record_id") or args.get("id") or args.get("path") or ""
+                surr = args.get("surround") or args.get("context_lines") or 0
+                res = memory_engine.memory_get(rid, surround=int(surr or 0))
                 if not res:
                     text_out = f"Hata: Hafıza kaydı bulunamadı: '{rid}'"
                 else:

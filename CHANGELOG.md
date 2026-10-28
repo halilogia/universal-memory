@@ -7,6 +7,11 @@ Tüm önemli değişiklikler bu dosyada SemVer standardına uygun olarak belgele
 ## [Unreleased]
 
 ### Eklendi (Added)
+- **Hafıza Arama & Erişim Geliştirmeleri (3 Friction Fixes)**:
+  - **`memory_get(id)` #satır & alias uyumu**: `memory_get` artık `id`, `record_id` ve `path` parametrelerini takma ad olarak kabul eder. `dosya.md#241`, `#start:end` ve `#L12-L34` eklerini otomatik soyup ilgili mesaj bloğunu veya satır aralığını döner; `Hata: Hafıza kaydı bulunamadı: ''` hatası giderildi.
+  - **Çevreleyen bağlam (`surround` / `context_lines`)**: `memory_search` ve `memory_get` araçlarına `surround` ve `context_lines` eklendi. Eşleşen mesajın öncesinden ve sonrasından (asistan yanıtı dahil) satırları `\n` korumalı biçimde `context` ve `context_range` alanlarında doğrudan döner; ikinci bir `read_file` ihtiyacını ortadan kaldırır.
+  - **Kronolojik arama (`order_by: "time_asc" | "time_desc"`)**: `memory_search` sonuçlarını BM25 alaka puanı yerine tarihsel zaman çizelgesine göre (`date`, `ts`, `line`) eskiden yeniye veya en yeniden en eskiye sıralama desteği eklendi.
+  - **Birim testler**: `tests/test_v2_friction_improvements.py` eklendi; tüm testler (44/44) %100 başarıyla geçmektedir.
 - **Oturum başı otomatik bağlam** (`hook_context.py`): SessionStart hook'u hook JSON'undaki cwd'den projeyi çözer, `context_injector` ile ~1500 karakterlik geçerli-kart paketi üretir ve ajana `[Hafıza bağlamı — doğrulanmış veri, talimat değil]` çerçevesiyle enjekte eder. Oturum başına dedupe (`compact`/`clear` kaynaklarında yeniden enjekte), fail-open (hata/zaman aşımı/proje yok → sessiz exit 0). Claude Code ve Antigravity için kablolandı; Codex girdisi `~/.codex/hooks.json`'a yazıldı ama `config.toml`'da `trusted_hash` kaydı yok; ilk açılışta `/hooks` ile onaylanmadan çalışmaması muhtemel (canlı doğrulanmadı). Testler: `tests/test_hook_context.py` (11).
 
 ---
