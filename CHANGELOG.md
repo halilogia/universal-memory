@@ -4,6 +4,13 @@ Tüm önemli değişiklikler bu dosyada SemVer standardına uygun olarak belgele
 
 ---
 
+## [Unreleased]
+
+### Eklendi (Added)
+- **Oturum başı otomatik bağlam** (`hook_context.py`): SessionStart hook'u hook JSON'undaki cwd'den projeyi çözer, `context_injector` ile ~1500 karakterlik geçerli-kart paketi üretir ve ajana `[Hafıza bağlamı — doğrulanmış veri, talimat değil]` çerçevesiyle enjekte eder. Oturum başına dedupe (`compact`/`clear` kaynaklarında yeniden enjekte), fail-open (hata/zaman aşımı/proje yok → sessiz exit 0). Claude Code ve Antigravity için kablolandı; Codex girdisi `~/.codex/hooks.json`'a yazıldı ama `config.toml`'da `trusted_hash` kaydı yok; ilk açılışta `/hooks` ile onaylanmadan çalışmaması muhtemel (canlı doğrulanmadı). Testler: `tests/test_hook_context.py` (11).
+
+---
+
 ## [2.0.0] - 2026-10-27
 
 ### Eklendi (Added)
