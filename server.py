@@ -7,7 +7,28 @@ Connects Antigravity, Claude Code, and Codex to the Obsidian SQLite FTS5 Memory 
 import sys
 import json
 import logging
+import importlib.util
 from typing import Any, Dict, List
+
+# Dağıtılmış kopyada bu dosyalardan biri eksikse hata ilk memory_* çağrısında
+# ("No module named ...") patlıyordu. Açılışta kontrol edip eksikleri adıyla söyle.
+REQUIRED_MODULES = (
+    "memory_engine", "memory_index", "bitemporal",
+    "conflict_resolver", "context_injector", "hook_context",
+)
+
+
+def _verify_install() -> None:
+    missing = [m for m in REQUIRED_MODULES if importlib.util.find_spec(m) is None]
+    if missing:
+        sys.stderr.write(
+            "universal-memory: eksik modül(ler): " + ", ".join(m + ".py" for m in missing)
+            + "\nÇözüm: repoda `python tools/sync_deploy.py --apply` çalıştır.\n"
+        )
+        sys.exit(1)
+
+
+_verify_install()
 
 import memory_engine
 

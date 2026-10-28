@@ -7,6 +7,7 @@ Tüm önemli değişiklikler bu dosyada SemVer standardına uygun olarak belgele
 ## [Unreleased]
 
 ### Eklendi (Added)
+- **Dağıtım koruması**: `server.py` açılışta zorunlu modüllerin varlığını denetler; eksikse adlarını yazıp çıkar (önceden ilk çağrıda `No module named 'bitemporal'` ile patlıyordu). `tools/sync_deploy.py` repo ile `~/.gemini/mcp/universal-memory/` arasındaki farkı listeler, `--apply` ile kopyalar ve eskileri `backups/` altına yedekler. `tests/test_deploy_guard.py` (2 test, toplam 46/46).
 - **Hafıza Arama & Erişim Geliştirmeleri (3 Friction Fixes)**:
   - **`memory_get(id)` #satır & alias uyumu**: `memory_get` artık `id`, `record_id` ve `path` parametrelerini takma ad olarak kabul eder. `dosya.md#241`, `#start:end` ve `#L12-L34` eklerini otomatik soyup ilgili mesaj bloğunu veya satır aralığını döner; `Hata: Hafıza kaydı bulunamadı: ''` hatası giderildi.
   - **Çevreleyen bağlam (`surround` / `context_lines`)**: `memory_search` ve `memory_get` araçlarına `surround` ve `context_lines` eklendi. Eşleşen mesajın öncesinden ve sonrasından (asistan yanıtı dahil) satırları `\n` korumalı biçimde `context` ve `context_range` alanlarında doğrudan döner; ikinci bir `read_file` ihtiyacını ortadan kaldırır.
