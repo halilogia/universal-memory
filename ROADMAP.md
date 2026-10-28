@@ -10,10 +10,18 @@
 
 ---
 
-## ⚡ v1.1 (Aktif Sprint)
-- [/] **Core Docs Standardizasyonu:** 8 temel dokümanın tamamlanması ve repoya push edilmesi
+## ⚡ v1.1 (Tamamlandı)
+- [x] Bitemporal veri modeli (`bitemporal.py`) ve zaman yolculuğu
+- [x] Otomatik hafıza çelişki tespiti (`conflict_resolver.py`)
+- [x] SessionStart çoklu-ajan bağlam enjektörü (`hook_context.py` - Claude, Antigravity, Codex)
+- [x] Core Docs ve 41/41 birim test paketi
+
+---
+
+## ⚡ v1.2 (Aktif Sprint)
 - [ ] Vektör gömme (Vector Embeddings) ile hibrit anlamsal + FTS5 araması
-- [ ] Otomatik hafıza çelişki tespiti (Conflict Detection)
+- [ ] Sohbet analizi ve yapay zeka destekli otomatik karar adayı çıkarıcı
+- [ ] Obsidian eklentisi (Community Plugin) paketlemesi
 
 ---
 

@@ -2,9 +2,12 @@
 
 ---
 
-## 🚀 Aktif Sprint (v1.1)
-- [/] **Core Docs Standardizasyonu:** 8 temel dokümanın tamamlanması ve repoya push edilmesi
-- [ ] **Hibrit Arama:** FTS5 BM25 puanlaması ile semantik benzerlik entegrasyonu
+## 🚀 Aktif Sprint (v1.2)
+- [x] **SessionStart Otomatik Bağlam Enjeksiyonu:** `hook_context.py`, fail-open mimari ve 11 test (41/41 test OK).
+- [x] **Bitemporal & Çelişki Yönetimi:** `bitemporal.py` ve `conflict_resolver.py` ile zaman damgalı/çelişki takipli hafıza.
+- [x] **Core Docs Standardizasyonu:** Temel repo dokümantasyonu.
+- [ ] **Hibrit Arama:** FTS5 BM25 puanlaması ile semantik benzerlik entegrasyonu.
+- [ ] **Sohbet Analizi & Otomatik Özetleme:** Ajan sohbetlerinden otomatik karar çıkarma ve onay zinciri.
 
 ---
 
