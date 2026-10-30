@@ -19,6 +19,7 @@ Universal Memory, yapay zeka ajanlarının oturumlar arasında hafızasını kay
 │             Universal Memory MCP Server (server.py)                    │
 │   • memory_search   • memory_get   • memory_propose                    │
 │   • memory_commit   • memory_handoff                                   │
+│   • memory_ingest   • memory_graph   • memory_express  (Second Brain)  │
 └───────────────────────────────────┬────────────────────────────────────┘
                                     │
          ┌──────────────────────────┴──────────────────────────┐
@@ -28,6 +29,7 @@ Universal Memory, yapay zeka ajanlarının oturumlar arasında hafızasını kay
 │  • Otomatik Sohbet Transkripti  │   │ (.index/memory_v2.sqlite)        │
 │  • projects/<proje>/decisions/  │◄──┤ • Türkçe harf katlama (ç->c vb.) │
 │  • projects/<proje>/lessons/    │   │ • Mesaj düzeyinde indeksleme     │
+│  • projects/<proje>/resources/  │   │                                  │
 │  • projects/<proje>/handoffs/   │   │ • Git commit bayatlık uyarısı    │
 └─────────────────────────────────┘   └──────────────────────────────────┘
 ```
@@ -53,6 +55,7 @@ Universal Memory, tüm verileri standart Markdown formatında ve insan-okunabili
     └── GrandStrategy3D/
         ├── decisions/                  # Mimari Kararlar (DECISION-*.md)
         ├── lessons/                    # Öğrenilen Dersler & Hata Çözümleri (LESSON-*.md)
+        ├── resources/                  # Damıtılmış kaynaklar: makale/transkript kartları (RESOURCE-*.md)
         └── handoffs/                   # Oturum Devir Notları (HANDOFF-*.md)
 ```
 
@@ -60,7 +63,7 @@ Universal Memory, tüm verileri standart Markdown formatında ve insan-okunabili
 
 ## 🛠️ Araç Rehberi (Tool Reference)
 
-Universal Memory 5 temel araç sunar. Bu araçlar Git benzeri bir yaşam döngüsüyle çalışır:
+Universal Memory; Git benzeri yaşam döngüsüyle çalışan temel araçlar (1-5) ve Second Brain araçları (6-8) sunar:
 
 ### 1. `memory_search` (Arama)
 Obsidian kasasındaki tüm sohbetleri ve yapısal notları **mesaj düzeyinde** arar.
@@ -139,6 +142,33 @@ Bir çalışma seansı bittiğinde veya görev başka bir ajana/oturumuna devred
   - **Açık İşler:** Bir sonraki oturumun doğrudan başlayacağı `- [ ]` görev listesi.
 - **Yeni Oturum Başlarken:**
   Yeni gelen ajan ilk iş `memory_get` ile en son `HANDOFF` dosyasını okur; bağlam kaybı yaşamadan açık maddelerden çalışmaya devam eder.
+
+---
+
+### 6. `memory_ingest` (Damıt: Kademeli Özetleme)
+Ham içeriği (YouTube transkripti, makale, ses dökümü, uzun doküman) atomik bir bilgi kartına çevirir (Tiago Forte Kademeli Özetleme + Fabric `extract_wisdom`).
+- **Parametreler:** `project`, `title`, `content` (zorunlu); `source_type` (`text`|`youtube`|`article`|`audio_transcript`), `tags`, `save_as` (`resource` → `resources/`, `lesson` → `lessons/`), `force`.
+- **Kart içeriği:** `Executive Summary` (2-3 cümle), `Core Takeaways` (3-5 çıkarım; aksiyon gerektirenler `- [ ]`), `Key Quotes` (metindeki tırnaklı alıntılar), `Extracted Insights`. Ham metinde **kalın** = 1. katman, ==vurgu== = 2. katman.
+- **Mühür:** Kart `status: canonical` yazılır, Git HEAD hash'i `source_commit`'e, ham içeriğin SHA-256'sı `content_hash`'e mühürlenir; FTS5'e anında eklenir. Aynı içerik ikinci kez eklenmez (`duplicate`); API anahtarı kalıpları `[REDACTED]` olur. Mevcut notlarla ortak etiket/anahtar kelime varsa karta `- related_to: [[id]]` bağları eklenir.
+- **Sınır:** Çıkarım deterministik ve çıkarımsaldır (cümleler kaynaktan birebir seçilir, LLM yok); soyutlayıcı özet için ajan kartı sonradan `memory_propose` ile zenginleştirebilir. Ham içerik karta en fazla 20.000 karakter yazılır.
+- **Örnek:** `memory_ingest(project="GravityGuard", title="Kademeli Özetleme", content=<transkript>, source_type="youtube", tags=["pkm"])` → `projects/GravityGuard/resources/RESOURCE-KADEMELI-OZETLEME-4D932222.md`
+
+---
+
+### 7. `memory_graph` (Organize: Zettelkasten Graf & MOC)
+Projedeki geçerli karar, ders, kaynak ve kuralları çapraz bağlar ve bir **Map of Content (MOC)** Markdown'ı döner (Obsidian graf uyumlu `[[id]]` bağları).
+- **Parametreler:** `project` (zorunlu), `topic` (opsiyonel; konu notları + komşuları).
+- **Bağlantı kuralı:** `2 × ortak etiket + ortak anahtar kelime ≥ 3` (çıkarımsal) ya da açık `[[wikilink]]` / `supersedes` / `contradicts` kenarı. Geçersiz kılınmış (superseded) kayıtlar grafa girmez.
+- **Çıktı:** Merkez notlar (hub), konuya göre kümeler (karar/ders/kaynak/kural), her notun `↔` karşılıklı bağlantıları ve bağlantısız notlar.
+
+---
+
+### 8. `memory_express` (İfade: Ara Paket Üretici)
+Kayıtlı kararları, dersleri, kaynakları ve handoff'ları insan/geliştirici çıktısına derler.
+- **Parametreler:** `project` (zorunlu), `output_type` (`adr_report` | `release_notes` | `project_brief`), `topic`, `since` (yalnız `release_notes`, `YYYY-MM-DD`).
+- `adr_report`: ADR-001… numaralı karar kayıtları (Bağlam / Karar / Sonuçlar, durum: Accepted / Proposed / Superseded by `[[id]]`, Git hash, ilişkili ders ve kaynaklar). Geçersiz kılınanlar tarihçe için dahildir.
+- `release_notes`: kararlar, dersler (denenip çalışmayanlar ⚠️), geçersiz kılınanlar, eklenen kaynaklar, handoff özetleri, açık işler.
+- `project_brief`: güncel durum, kurallar, aktif kararlar, denenip çalışmayanlar, dersler, kaynaklar, açık işler ve bilgi haritası.
 
 ---
 

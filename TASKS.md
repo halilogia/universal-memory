@@ -6,6 +6,7 @@
 - [x] **SessionStart Otomatik Bağlam Enjeksiyonu:** `hook_context.py`, fail-open mimari ve 11 test (41/41 test OK).
 - [x] **Bitemporal & Çelişki Yönetimi:** `bitemporal.py` ve `conflict_resolver.py` ile zaman damgalı/çelişki takipli hafıza.
 - [x] **Core Docs Standardizasyonu:** Temel repo dokümantasyonu.
+- [x] **Second Brain (CODE):** `memory_ingest`, `memory_graph`, `memory_express` + 23 test (69/69).
 - [ ] **Hibrit Arama:** FTS5 BM25 puanlaması ile semantik benzerlik entegrasyonu.
 - [ ] **Sohbet Analizi & Otomatik Özetleme:** Ajan sohbetlerinden otomatik karar çıkarma ve onay zinciri.
 

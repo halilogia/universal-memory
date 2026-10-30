@@ -7,6 +7,11 @@ Tüm önemli değişiklikler bu dosyada SemVer standardına uygun olarak belgele
 ## [Unreleased]
 
 ### Eklendi (Added)
+- **Second Brain (CODE) katmanı** (`second_brain.py`): üç yeni MCP aracı ve şemaları (`schemas/memory_ingest.json`, `memory_graph.json`, `memory_express.json`).
+  - **`memory_ingest`** (Damıt): YouTube transkripti / makale / ses dökümü / doküman → Kademeli Özetleme kartı (`Executive Summary`, `Core Takeaways` + aksiyon `- [ ]`, `Key Quotes`, `Extracted Insights`; ham metinde **kalın**/==vurgu== katmanları). `resources/` (veya `lessons/`) altına canonical yazar, FTS5'e ekler, Git HEAD (`source_commit`) ve SHA-256 (`content_hash`) mühürler, aynı içeriği tekrar eklemez, gizli anahtarları maskeler, ilişkili notlara `related_to` bağı koyar. Çıkarım deterministiktir (LLM yok).
+  - **`memory_graph`** (Organize): karar/ders/kaynak/kural arasında ortak etiket + anahtar kelime + açık wikilink bağlantıları, kümeler, merkez/bağlantısız notlar ve Obsidian uyumlu MOC Markdown'ı; `topic` filtresi; superseded kayıtlar dışarıda.
+  - **`memory_express`** (İfade): `adr_report`, `release_notes` (`since` ile), `project_brief` çıktıları.
+  - `server.REQUIRED_MODULES`'a `second_brain` eklendi. `tests/test_second_brain.py` (23 test, toplam 69/69).
 - **Dağıtım koruması**: `server.py` açılışta zorunlu modüllerin varlığını denetler; eksikse adlarını yazıp çıkar (önceden ilk çağrıda `No module named 'bitemporal'` ile patlıyordu). `tools/sync_deploy.py` repo ile `~/.gemini/mcp/universal-memory/` arasındaki farkı listeler, `--apply` ile kopyalar ve eskileri `backups/` altına yedekler. `tests/test_deploy_guard.py` (2 test, toplam 46/46).
 - **Hafıza Arama & Erişim Geliştirmeleri (3 Friction Fixes)**:
   - **`memory_get(id)` #satır & alias uyumu**: `memory_get` artık `id`, `record_id` ve `path` parametrelerini takma ad olarak kabul eder. `dosya.md#241`, `#start:end` ve `#L12-L34` eklerini otomatik soyup ilgili mesaj bloğunu veya satır aralığını döner; `Hata: Hafıza kaydı bulunamadı: ''` hatası giderildi.

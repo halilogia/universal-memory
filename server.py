@@ -14,7 +14,7 @@ from typing import Any, Dict, List
 # ("No module named ...") patlıyordu. Açılışta kontrol edip eksikleri adıyla söyle.
 REQUIRED_MODULES = (
     "memory_engine", "memory_index", "bitemporal",
-    "conflict_resolver", "context_injector", "hook_context",
+    "conflict_resolver", "context_injector", "hook_context", "second_brain",
 )
 
 
@@ -231,6 +231,64 @@ TOOLS = [
             },
             "required": ["project", "summary"]
         }
+    },
+    {
+        "name": "memory_ingest",
+        "description": "Second Brain / Damıt: ham içeriği (YouTube transkripti, makale, ses dökümü, uzun doküman) Kademeli Özetleme ile atomik karta çevirir: Executive Summary (2-3 cümle), Core Takeaways (3-5 çıkarım, aksiyonlar '- [ ]'), Key Quotes / Extracted Insights; ham metinde **kalın** (1. katman) ve ==vurgu== (2. katman). Çıkarım deterministiktir (kaynaktan birebir cümleler, LLM yok). 'projects/<proje>/resources/' (veya lessons/) altına canonical yazar, FTS5'e ekler, Git HEAD hash'ini (source_commit) ve içerik SHA-256'sını mühürler, ilişkili mevcut notlara [[bağ]] ekler. Aynı içerik tekrar eklenmez; gizli anahtarlar maskelenir.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {"type": "string", "description": "İlgili proje adı."},
+                "title": {"type": "string", "description": "Kaynak başlığı (boşsa ilk özet cümlesinden türetilir)."},
+                "content": {"type": "string", "description": "Ham içerik (transkript, makale metni, doküman)."},
+                "source_type": {
+                    "type": "string",
+                    "enum": ["text", "youtube", "article", "audio_transcript"],
+                    "description": "Kaynak türü.",
+                    "default": "text"
+                },
+                "tags": {"type": "array", "items": {"type": "string"}, "description": "Etiketler; en sık 3 anahtar kelime otomatik eklenir."},
+                "save_as": {
+                    "type": "string",
+                    "enum": ["resource", "lesson"],
+                    "description": "Kayıt klasörü: 'resource' (resources/, varsayılan) veya 'lesson' (lessons/).",
+                    "default": "resource"
+                },
+                "force": {"type": "boolean", "description": "true ise aynı içerik daha önce eklenmiş olsa da yaz.", "default": False}
+            },
+            "required": ["project", "title", "content"]
+        }
+    },
+    {
+        "name": "memory_graph",
+        "description": "Second Brain / Organize: projedeki geçerli karar (decisions/), ders (lessons/), kaynak (resources/) ve kuralları ortak etiket + anahtar kelime ile çapraz bağlar (açık [[wikilink]] ve supersedes/contradicts kenarları da dahil), kümeler ve 'Map of Content (MOC)' Markdown'ı döner (Obsidian graf uyumlu: [[DECISION-xxx]], [[LESSON-yyy]]). Merkez notları ve bağlantısız notları listeler. 'topic' verilirse yalnız o konudaki notlar ve komşuları.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {"type": "string", "description": "İlgili proje adı."},
+                "topic": {"type": "string", "description": "Opsiyonel konu filtresi (örn. 'logging', 'sprite sheet')."}
+            },
+            "required": ["project"]
+        }
+    },
+    {
+        "name": "memory_express",
+        "description": "Second Brain / İfade: projedeki kararları, dersleri, kaynakları ve handoff'ları derleyip insan/geliştirici çıktısı üretir (Markdown): 'adr_report' (ADR numaralı rapor; geçersiz kılınanlar durumuyla birlikte), 'release_notes' (kararlar, dersler, geçersiz kılınanlar, handoff özetleri, açık işler), 'project_brief' (kurallar, aktif kararlar, denenip çalışmayanlar, açık işler, bilgi haritası).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {"type": "string", "description": "İlgili proje adı."},
+                "output_type": {
+                    "type": "string",
+                    "enum": ["adr_report", "release_notes", "project_brief"],
+                    "description": "Çıktı türü.",
+                    "default": "adr_report"
+                },
+                "topic": {"type": "string", "description": "Opsiyonel konu filtresi."},
+                "since": {"type": "string", "description": "Opsiyonel (release_notes): bu tarihten (YYYY-MM-DD) sonraki kayıtlar."}
+            },
+            "required": ["project"]
+        }
     }
 ]
 
@@ -335,6 +393,22 @@ def handle_request(req: Dict[str, Any]) -> Dict[str, Any]:
                 unresolved = args.get("unresolved", [])
                 res = memory_engine.memory_handoff(proj, summary, decisions, unresolved)
                 text_out = json.dumps(res, ensure_ascii=False, indent=2)
+
+            elif tool_name == "memory_ingest":
+                import second_brain
+                res = second_brain.ingest(args.get("project", ""), args.get("title", ""), args.get("content", ""),
+                                          args.get("source_type", "text"), args.get("tags", []),
+                                          save_as=args.get("save_as", "resource"), force=bool(args.get("force", False)))
+                text_out = json.dumps(res, ensure_ascii=False, indent=2)
+
+            elif tool_name in ("memory_graph", "memory_express"):
+                import second_brain
+                if tool_name == "memory_graph":
+                    res = second_brain.graph(args.get("project", ""), args.get("topic"))
+                else:
+                    res = second_brain.express(args.get("project", ""), args.get("output_type", "adr_report"),
+                                               args.get("topic"), args.get("since"))
+                text_out = res["markdown"] if res.get("success") else json.dumps(res, ensure_ascii=False, indent=2)
 
             else:
                 text_out = f"Bilinmeyen araç: {tool_name}"
