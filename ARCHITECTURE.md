@@ -74,5 +74,5 @@ Tasarım notları: Graphiti'den bi-temporal pencere ve geçersiz kılma, Mem0'da
 - **Kademeli özetleme katmanları:** 0 = ham metin, 1 = **kalın** (en iyi 8 cümle), 2 = ==vurgu== (alıntı/içgörü), 3 = `Executive Summary`.
 - **Bi-temporal uyum:** kartlar `ingestion_time`, `valid_from`, `valid_until`, `source_event_time`, `superseded_by` taşır. Graf ve brif yalnız şimdi geçerli kayıtları kullanır (`record_is_valid`); ADR raporu geçersiz kılınmış kararları tarihçe olarak durumuyla listeler. Kaynak kartları `context_injector`'a girmez (bağlam paketi şişmez).
 - **Bağlantı eşiği:** `2 × ortak etiket + ortak anahtar kelime ≥ 3`; `quick-capture`/`negative` etiketleri sayılmaz. İngest sırasında yeni karta en ilgili 5 not `- related_to: [[id]]` ile bağlanır; `memory_index` bunları `memory_edges`'e yazar ve graf çift yönlü gösterir.
-- **Güvenlik:** gizli anahtar kalıpları (`sk-`, `ghp_`, `AKIA`, `Bearer`, özel anahtar başlığı…) kartlara yazılmadan önce `[REDACTED]` yapılır; yol güvenliği `_safe_project_dir` ile sağlanır.
+- **Güvenlik:** gizli anahtar kalıpları (API anahtarları, GitHub ve AWS erişim belirteçleri, `Bearer`, özel anahtar başlığı…) kartlara yazılmadan önce `[REDACTED]` yapılır; yol güvenliği `_safe_project_dir` ile sağlanır.
 - **Dağıtım:** `second_brain` `server.REQUIRED_MODULES` listesindedir; `tools/sync_deploy.py` çalışan MCP kopyasına taşır.
