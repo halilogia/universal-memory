@@ -15,6 +15,7 @@ project = top-level vault folder, results carry speaker, time, agent, session an
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import sqlite3
@@ -110,6 +111,17 @@ def _norm_project(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", fold(name or ""))
 
 
+def parse_tags(raw: str) -> List[str]:
+    """Read safely serialized tags while supporting legacy unquoted lists."""
+    try:
+        tags = json.loads(raw or "[]")
+    except ValueError:
+        tags = None
+    if isinstance(tags, list) and all(isinstance(tag, str) for tag in tags):
+        return tags
+    return [tag.strip().strip("'\"") for tag in (raw or "").strip("[]").split(",") if tag.strip()]
+
+
 def _split_frontmatter(lines: List[str]) -> Tuple[Dict[str, str], int]:
     """(frontmatter dict, number of lines it occupies). Only simple ``key: value`` lines are read."""
     if not lines or lines[0].strip() != "---":
@@ -120,7 +132,19 @@ def _split_frontmatter(lines: List[str]) -> Tuple[Dict[str, str], int]:
             return fm, i + 1
         m = re.match(r"^([A-Za-z_][\w-]*):\s*(.*)$", lines[i])
         if m:
-            fm[m.group(1)] = m.group(2).strip().strip("'\"")
+            key, value = m.group(1), m.group(2).strip()
+            if key == "status" and key in fm:
+                # Ambiguous approval metadata must never grant canonical status.
+                fm[key] = "proposal"
+                continue
+            if value.startswith('"') and value.endswith('"'):
+                try:
+                    value = json.loads(value)
+                except ValueError:
+                    value = value.strip("'\"")
+            else:
+                value = value.strip("'\"")
+            fm[key] = value
     return {}, 0
 
 
@@ -167,7 +191,7 @@ def _file_meta(rel: str, lines: List[str], fm: Dict[str, str], st: os.stat_resul
     iso = datetime.fromtimestamp(st.st_mtime).isoformat()
     return {
         "project": project, "pnorm": _norm_project(project), "agent": agent, "session": session, "title": title,
-        "date": date, "tzlocal": tzlocal, "rtype": rtype, "rid": fm.get("id", ""), "status": fm.get("status", "canonical"),
+        "date": date, "tzlocal": tzlocal, "rtype": rtype, "rid": fm.get("id", ""), "status": fm.get("status") or "proposal",
         "source_commit": fm.get("source_commit", ""), "tags": fm.get("tags", ""),
         "created_at": fm.get("created_at") or iso, "updated_at": fm.get("updated_at") or fm.get("created_at") or iso,
         "valid_from": fm.get("valid_from", ""), "valid_until": fm.get("valid_until", ""),

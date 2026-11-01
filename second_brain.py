@@ -252,7 +252,7 @@ def ingest(project: str, title: str, content: str, source_type: str = "text", ta
 # --------------------------------------------------------------------------- kasa okuma
 
 def _parse_tags(value: str) -> List[str]:
-    return [t.strip() for t in (value or "").strip("[]").split(",") if t.strip()]
+    return memory_index.parse_tags(value)
 
 
 def _read_body(rel: str) -> str:

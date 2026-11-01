@@ -59,7 +59,7 @@ def similarity(title_a: str, body_a: str, tags_a: Sequence[str], title_b: str, b
 
 
 def _split_tags(raw: str) -> List[str]:
-    return [t.strip().strip("'\"") for t in (raw or "").strip("[]").split(",") if t.strip()]
+    return memory_index.parse_tags(raw)
 
 
 def classify(new_title: str, new_body: str, old_title: str, old_body: str, sim: float) -> str:

@@ -6,6 +6,9 @@ Tüm önemli değişiklikler bu dosyada SemVer standardına uygun olarak belgele
 
 ## [Unreleased]
 
+### Security
+- Prevent proposal frontmatter injection by normalizing line breaks and safely quoting title, project, and tags. Missing or empty status and duplicate status keys now fail closed to `proposal`. Regression tests cover injection, malformed headers, metadata round trips, and explicit commit approval.
+
 ### Eklendi (Added)
 - **Oturum medya arşivi** (`session_media.py`): ajanların ürettiği görseller oturumun yanına `<oturum klasörü>/media/<başlık>.<uzantı>` olarak kopyalanır (aynı bayt tekrar yazılmaz, ad çakışmasında `_2`). Claude Code: `mcp__visualize__show_widget` `widget_code` (`<svg` ise `.svg`, xmlns + varsayılan renk değişkenleriyle tek başına açılır; değilse `.html`), `SendUserFile` dosyaları, `[Image: source: ...]` yolları (dosya hâlâ varsa), `Read` ile okunan görseller, yapıştırılan base64 görseller. Codex: `~/.codex/generated_images/<oturum id>/`. Antigravity: `brain/<cid>/` görsel ve videoları. Kasa arşivleyicisi (`obsidian/scripts/auto_archive_daemon.py`, `write_session_to_destinations(media_args=...)`) bunu çağırır. Kaynak verisi olmayanlar: ChatGPT web (yalnızca metin dışa aktarımı), Command Code (jsonl'de görsel verisi yok). `tests/test_session_media.py` (6 test, toplam 75/75).
 - **Second Brain (CODE) katmanı** (`second_brain.py`): üç yeni MCP aracı ve şemaları (`schemas/memory_ingest.json`, `memory_graph.json`, `memory_express.json`).

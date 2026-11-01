@@ -399,6 +399,11 @@ def memory_propose(project: str, rtype: str, title: str, content: str, tags: Lis
     import conflict_resolver
     from bitemporal import now_iso
 
+    # Keep untrusted metadata on one physical line before rendering YAML.
+    project = re.sub(r'[\r\n]+', ' ', project).strip()
+    title = re.sub(r'[\r\n]+', ' ', title).strip()
+    tags = [re.sub(r'[\r\n]+', ' ', tag).strip() for tag in tags]
+
     resolution = conflict_resolver.analyze(project, rtype, title, content, tags)
     if resolution["action"] == "reject_duplicate" and not force:
         return {"success": False, "error": "duplicate", "duplicate_of": resolution["duplicate_of"],
@@ -414,7 +419,8 @@ def memory_propose(project: str, rtype: str, title: str, content: str, tags: Lis
     head_commit = _get_git_commit(project) or ""
     now_str = datetime.now().isoformat()
     ingestion = now_iso()
-    tags_yaml = "[" + ", ".join(tags) + "]" if tags else "[]"
+    # JSON strings/arrays are valid YAML and escape quotes and control characters.
+    tags_yaml = json.dumps(tags)
     scope_yaml = (f"agent_id: {agent_id}\n" if agent_id else "") + (f"run_id: {run_id}\n" if run_id else "")
     links = "".join(f"\n- contradicts: [[{cid}]]" for cid in resolution["supersedes"])
 
@@ -422,8 +428,8 @@ def memory_propose(project: str, rtype: str, title: str, content: str, tags: Lis
         return f"""---
 id: {rid}
 type: {rtype}
-project: {project}
-title: {title}
+project: {json.dumps(project)}
+title: {json.dumps(title)}
 status: {_status}
 source_commit: {head_commit}
 tags: {tags_yaml}
