@@ -17,6 +17,7 @@ REQUIRED_MODULES = (
     "memory_engine", "memory_index", "bitemporal",
     "conflict_resolver", "context_injector", "hook_context", "second_brain",
     "audit_logger",
+    "devlog_bridge",
 )
 
 
@@ -295,6 +296,41 @@ TOOLS = [
             },
             "required": ["project"]
         }
+    },
+    {
+        "name": "devlog_list",
+        "description": "DevLog zaman tünelindeki girdileri listeler (Obsidian kasasındaki projects/<project>/devlogs/ ve yerel devlogs/ dizinleri). Proje veya etiket filtresi alabilir. Tarihe göre sıralı özet liste döner.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {"type": "string", "description": "Opsiyonel proje filtresi (örn. 'devlog', 'universal-memory', 'AgentObservatory')."},
+                "tag": {"type": "string", "description": "Opsiyonel etiket filtresi (örn. 'minimalism', 'ui', 'performance')."},
+                "limit": {"type": "integer", "description": "Maksimum kayıt sayısı (varsayılan: 10).", "default": 10}
+            }
+        }
+    },
+    {
+        "name": "devlog_get",
+        "description": "Belirli bir DevLog girdisini tam metni ve tüm metadata/kaynakçasıyla getirir. Kayıt kimliği (id, örn. 'devlog-2026-11-02-entry2') veya dosya yolu alır.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entry_id": {"type": "string", "description": "DevLog kayıt kimliği (örn. 'devlog-2026-11-02-entry2') veya dosya yolu."},
+                "id": {"type": "string", "description": "entry_id için takma ad."}
+            }
+        }
+    },
+    {
+        "name": "devlog_check_session",
+        "description": "Bir sohbet oturumunun (conversation_id) DevLog defterindeki (ledger) durumunu kontrol eder. Sonuç: 'NEW' (hiç analiz edilmemiş), 'UP_TO_DATE' (güncel, 0 token), 'DELTA' (yeni mesajlar var), 'INVALIDATED'.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "conversation_id": {"type": "string", "description": "Kontrol edilecek sohbet/oturum kimliği (conversation ID)."},
+                "transcript_path": {"type": "string", "description": "Opsiyonel transcript.jsonl dosya yolu (verilirse yeni mesaj farkı hesaplanır)."}
+            },
+            "required": ["conversation_id"]
+        }
     }
 ]
 
@@ -419,6 +455,16 @@ def handle_request(req: Dict[str, Any]) -> Dict[str, Any]:
                     res = second_brain.express(args.get("project", ""), args.get("output_type", "adr_report"),
                                                args.get("topic"), args.get("since"))
                 text_out = res["markdown"] if res.get("success") else json.dumps(res, ensure_ascii=False, indent=2)
+
+            elif tool_name in ("devlog_list", "devlog_get", "devlog_check_session"):
+                import devlog_bridge
+                if tool_name == "devlog_list":
+                    res = devlog_bridge.devlog_list(project=args.get("project"), limit=args.get("limit", 10), tag=args.get("tag"))
+                elif tool_name == "devlog_get":
+                    res = devlog_bridge.devlog_get(args.get("entry_id") or args.get("id") or "")
+                else:
+                    res = devlog_bridge.devlog_check_session(args.get("conversation_id", ""), transcript_path=args.get("transcript_path"))
+                text_out = json.dumps(res, ensure_ascii=False, indent=2)
 
             else:
                 text_out = f"Bilinmeyen araç: {tool_name}"
