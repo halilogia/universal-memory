@@ -90,12 +90,15 @@ dayNumber: 5
 tags:
   - alpha
   - beta
+verification:
+  status: "verified"
 """
         parsed = _fallback_parse_yaml(raw)
         self.assertEqual(parsed.get("id"), "simple-id")
         self.assertEqual(parsed.get("project"), "TestProj")
         self.assertEqual(parsed.get("dayNumber"), 5)
         self.assertEqual(parsed.get("tags"), ["alpha", "beta"])
+        self.assertEqual(parsed.get("verification", {}).get("status"), "verified")
 
     def test_devlog_roots_discovery(self):
         roots = devlog_roots(vault=self.vault_dir)

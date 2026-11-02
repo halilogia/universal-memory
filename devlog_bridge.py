@@ -72,36 +72,58 @@ def devlog_roots(vault: Optional[str] = None, local_dir: Optional[str] = None) -
 
 
 def _fallback_parse_yaml(raw_yaml: str) -> Dict[str, Any]:
-    """Minimal YAML parser fallback when PyYAML is unavailable."""
+    """Robust minimal YAML parser fallback supporting nested dicts and lists when PyYAML is unavailable."""
     result: Dict[str, Any] = {}
-    current_key = None
-    list_items = []
+    parent_stack: List[Tuple[int, Dict[str, Any]]] = [(-1, result)]
+    pending_key: Optional[str] = None
+    pending_indent: int = -1
+    list_items: List[str] = []
+
     for line in raw_yaml.splitlines():
-        trimmed = line.strip()
-        if not trimmed or trimmed.startswith("#"):
+        if not line.strip() or line.strip().startswith("#"):
             continue
+        indent = len(line) - len(line.lstrip(" "))
+        trimmed = line.strip()
+
         if trimmed.startswith("- "):
             val = trimmed[2:].strip().strip("\"'")
             list_items.append(val)
-            if current_key:
-                result[current_key] = list_items
+            if pending_key:
+                parent_stack[-1][1][pending_key] = list_items
             continue
-        if ":" in line:
-            parts = line.split(":", 1)
+
+        if ":" in trimmed:
+            parts = trimmed.split(":", 1)
             key = parts[0].strip()
             val = parts[1].strip().strip("\"'")
-            current_key = key
             list_items = []
+
+            # If previous key was empty and this line is indented under it, it's a sub-dict
+            if pending_key is not None and indent > pending_indent:
+                sub_dict: Dict[str, Any] = {}
+                parent_stack[-1][1][pending_key] = sub_dict
+                parent_stack.append((pending_indent, sub_dict))
+                pending_key = None
+
+            while len(parent_stack) > 1 and indent <= parent_stack[-1][0]:
+                parent_stack.pop()
+
+            cur = parent_stack[-1][1]
+
             if val == "":
-                result[key] = {}
-            elif val.lower() == "true":
-                result[key] = True
-            elif val.lower() == "false":
-                result[key] = False
-            elif val.isdigit():
-                result[key] = int(val)
+                pending_key = key
+                pending_indent = indent
+                cur[key] = {}
             else:
-                result[key] = val
+                pending_key = None
+                if val.lower() == "true":
+                    cur[key] = True
+                elif val.lower() == "false":
+                    cur[key] = False
+                elif val.isdigit():
+                    cur[key] = int(val)
+                else:
+                    cur[key] = val
     return result
 
 
