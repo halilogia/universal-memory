@@ -12,6 +12,9 @@ Tüm önemli değişiklikler bu dosyada SemVer standardına uygun olarak belgele
 - Append an evidence checklist on verification keywords or explicit request, reserving its full character budget. Reject budgets too small for the checklist and keep selected cards complete.
 - Add isolated cross-project, ranking, budget, validity, and MCP forwarding regression tests.
 
+### Fixed / Graph & Integrity
+- **Dugum ve Kenar Temizligi ([#1](https://github.com/halilogia/universal-memory/issues/1))**: Bir not silindiginde veya frontmatter `id`'si degistiginde SQLite `memory_nodes` ve `memory_edges` tablolarindaki eski kayitlarin yetim kalmasi ve hayalet backlink uretmesi engellendi (Tesekkurler @mattabate). `tests/test_issue1_graph_cleanup.py` ile dogrulandi.
+
 ### Security
 - Prevent proposal frontmatter injection by normalizing line breaks and safely quoting title, project, and tags. Missing or empty status and duplicate status keys now fail closed to `proposal`. Regression tests cover injection, malformed headers, metadata round trips, and explicit commit approval.
 

@@ -4,6 +4,13 @@
 
 Universal Memory, yapay zeka ajanlarının oturumlar arasında hafızasını kaybetmesini önleyen, kararları ve devir notlarını Git commit hash'lerine mühürleyen ve **SQLite FTS5 BM25** ile milisaniyeler içinde arama yapan hafif ve güçlü bir bellek mimarisidir.
 
+
+### 1-Prompt Setup for AI Agents (Claude Code, Antigravity, Codex)
+Feed this single sentence to your AI coding agent:
+> `Clone https://github.com/halilogia/universal-memory and set it up locally. Follow its SETUP.md.`
+
+---
+
 ---
 
 ## 🏛️ Mimari Genel Bakış (Architecture)
@@ -220,3 +227,11 @@ export UNIVERSAL_MEMORY_VAULT=~/obsidian
   }
 }
 ```
+
+---
+
+## Katkida Bulunanlar (Contributors)
+
+Acik kaynak ekosistemine degerli katkilari ve guvenlik bildirimleri icin tesekkur ederiz:
+- **Matt Abate ([@mattabate](https://github.com/mattabate))**: Frontmatter ayristirmasindaki yetki yukseltme aciginin sorumlu bicimde bildirilmesi ve silinen notlarda veritabani dugum/kenar temizligi ([#1](https://github.com/halilogia/universal-memory/issues/1)) tespiti.
+
