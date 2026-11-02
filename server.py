@@ -68,8 +68,8 @@ TOOLS = [
                 },
                 "order_by": {
                     "type": "string",
-                    "enum": ["relevance", "time_asc", "time_desc"],
-                    "description": "Sonuç sıralaması: 'relevance' (varsayılan BM25), 'time_asc' (eskiden yeniye kronolojik), 'time_desc' (en yeniden en eskiye).",
+                    "enum": ["relevance", "salience", "time_asc", "time_desc"],
+                    "description": "Sonuç sıralaması: 'relevance' (varsayılan BM25 + salience takviyeli), 'salience' (hafıza ısı haritası / salience puanına göre), 'time_asc' (eskiden yeniye kronolojik), 'time_desc' (en yeniden en eskiye).",
                     "default": "relevance"
                 },
                 "surround": {
@@ -145,7 +145,8 @@ TOOLS = [
                     "default": False
                 },
                 "agent_id": {"type": "string", "description": "Kapsam: kaydı üreten/yalnız onun kullanacağı ajan."},
-                "run_id": {"type": "string", "description": "Kapsam: oturum/çalıştırma kimliği."}
+                "run_id": {"type": "string", "description": "Kapsam: oturum/çalıştırma kimliği."},
+                "verified_golden": {"type": "boolean", "description": "İnsan tarafından kalıcı temel referans işaretlenmiş mi (arama ve referanslarda daima üstünlük korur).", "default": False}
             },
             "required": ["project", "type", "title", "content"]
         }
@@ -368,7 +369,8 @@ def handle_request(req: Dict[str, Any]) -> Dict[str, Any]:
                 content = args.get("content", "")
                 tags = args.get("tags", [])
                 res = memory_engine.memory_propose(proj, rtype, title, content, tags, force=bool(args.get("force", False)),
-                                                   agent_id=args.get("agent_id", ""), run_id=args.get("run_id", ""))
+                                                   agent_id=args.get("agent_id", ""), run_id=args.get("run_id", ""),
+                                                   verified_golden=bool(args.get("verified_golden", False)))
                 text_out = json.dumps(res, ensure_ascii=False, indent=2)
 
             elif tool_name == "memory_capture":

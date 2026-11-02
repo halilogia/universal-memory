@@ -333,6 +333,30 @@ def memory_get(record_id: str, surround: int = 0) -> Optional[Dict[str, Any]]:
     return memory_index.get(record_id, surround=surround)
 
 
+def record_recall_event(entry_id: str, weight: float = 1.0, timestamp: Optional[str] = None) -> Dict[str, Any]:
+    """v2: record recall event for salience heat map and counter (memory_index.py)."""
+    import memory_index
+    return memory_index.record_recall_event(entry_id, weight=weight, timestamp=timestamp)
+
+
+def get_salience(entry_id: str, as_of: Optional[str] = None) -> Dict[str, Any]:
+    """v2: calculate salience score and stats for entry (memory_index.py)."""
+    import memory_index
+    return memory_index.get_salience(entry_id, as_of=as_of)
+
+
+def set_verified_golden(entry_id: str, golden: bool = True) -> bool:
+    """v2: mark or unmark entry/file as verified golden reference (memory_index.py)."""
+    import memory_index
+    return memory_index.set_verified_golden(entry_id, golden=golden)
+
+
+def calculate_decay(weight: float, elapsed_seconds: float, half_life_days: float = 90.0) -> float:
+    """v2: calculate exponential half-life decay (memory_index.py)."""
+    import memory_index
+    return memory_index.calculate_decay(weight, elapsed_seconds, half_life_days=half_life_days)
+
+
 def _legacy_memory_get(record_id: str) -> Optional[Dict[str, Any]]:
     """(v1, unused) Retrieve full record content and metadata by ID."""
     conn = init_db()
@@ -390,7 +414,8 @@ def _safe_project_dir(project: str, subfolder: str = "") -> str:
 
 def memory_propose(project: str, rtype: str, title: str, content: str, tags: List[str] = [],
                    force: bool = False, agent_id: str = "", run_id: str = "", source_event_time: str = "",
-                   valid_from: str = "", _status: str = "proposal") -> Dict[str, Any]:
+                   valid_from: str = "", _status: str = "proposal",
+                   verified_golden: bool = False) -> Dict[str, Any]:
     """Create a new record with bi-temporal metadata after a duplicate/contradiction check (conflict_resolver).
 
     Duplicate -> nothing is written (``success: False, duplicate_of``) unless ``force``.
@@ -425,13 +450,14 @@ def memory_propose(project: str, rtype: str, title: str, content: str, tags: Lis
     links = "".join(f"\n- contradicts: [[{cid}]]" for cid in resolution["supersedes"])
 
     def render(rid: str) -> str:
+        vg_line = "verified_golden: true\n" if verified_golden else ""
         return f"""---
 id: {rid}
 type: {rtype}
 project: {json.dumps(project)}
 title: {json.dumps(title)}
 status: {_status}
-source_commit: {head_commit}
+{vg_line}source_commit: {head_commit}
 tags: {tags_yaml}
 created_at: {now_str}
 ingestion_time: {ingestion}

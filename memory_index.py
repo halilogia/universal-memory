@@ -94,6 +94,25 @@ def connect() -> sqlite3.Connection:
         );
         CREATE INDEX IF NOT EXISTS idx_edges_target ON memory_edges(target_id, relation);
         CREATE INDEX IF NOT EXISTS idx_edges_source ON memory_edges(source_id, relation);
+
+        -- Universal Memory Salience & Recall Counter
+        CREATE TABLE IF NOT EXISTS recall_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entry_id TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            weight REAL NOT NULL DEFAULT 1.0
+        );
+        CREATE INDEX IF NOT EXISTS idx_recall_events_entry ON recall_events(entry_id);
+        CREATE INDEX IF NOT EXISTS idx_recall_events_ts ON recall_events(timestamp);
+
+        CREATE TABLE IF NOT EXISTS memory_salience (
+            entry_id TEXT PRIMARY KEY,
+            hit_count INTEGER NOT NULL DEFAULT 0,
+            last_accessed TEXT DEFAULT NULL,
+            salience_score REAL NOT NULL DEFAULT 0.0,
+            verified_golden INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_salience_golden ON memory_salience(verified_golden);
     """)
     cols = [r[1] for r in conn.execute("PRAGMA table_info(files)")]
     if "tzlocal" not in cols:
@@ -101,6 +120,14 @@ def connect() -> sqlite3.Connection:
     for extra in ("valid_from", "valid_until", "source_event_time", "ingestion_time", "superseded_by", "agent_id", "run_id"):
         if extra not in cols:
             conn.execute(f"ALTER TABLE files ADD COLUMN {extra} TEXT DEFAULT ''")
+    if "hit_count" not in cols:
+        conn.execute("ALTER TABLE files ADD COLUMN hit_count INTEGER DEFAULT 0")
+    if "last_accessed" not in cols:
+        conn.execute("ALTER TABLE files ADD COLUMN last_accessed TEXT DEFAULT NULL")
+    if "salience_score" not in cols:
+        conn.execute("ALTER TABLE files ADD COLUMN salience_score REAL DEFAULT 0.0")
+    if "verified_golden" not in cols:
+        conn.execute("ALTER TABLE files ADD COLUMN verified_golden INTEGER DEFAULT 0")
     conn.commit()
     return conn
 
@@ -189,6 +216,8 @@ def _file_meta(rel: str, lines: List[str], fm: Dict[str, str], st: os.stat_resul
     name = os.path.basename(rel).lower()
     rtype = fm.get("type") or ("index" if name == "index.md" else "readme" if name == "readme.md" and len(parts) > 1 else "note")
     iso = datetime.fromtimestamp(st.st_mtime).isoformat()
+    vg_raw = fm.get("verified_golden", "") or fm.get("golden", "")
+    verified_golden = 1 if str(vg_raw).strip().lower() in ("true", "1", "yes") else 0
     return {
         "project": project, "pnorm": _norm_project(project), "agent": agent, "session": session, "title": title,
         "date": date, "tzlocal": tzlocal, "rtype": rtype, "rid": fm.get("id", ""), "status": fm.get("status") or "proposal",
@@ -197,6 +226,7 @@ def _file_meta(rel: str, lines: List[str], fm: Dict[str, str], st: os.stat_resul
         "valid_from": fm.get("valid_from", ""), "valid_until": fm.get("valid_until", ""),
         "source_event_time": fm.get("source_event_time", ""), "ingestion_time": fm.get("ingestion_time", ""),
         "superseded_by": fm.get("superseded_by", ""), "agent_id": fm.get("agent_id", ""), "run_id": fm.get("run_id", ""),
+        "verified_golden": verified_golden,
     }
 
 
@@ -281,6 +311,14 @@ def _index_file(conn: sqlite3.Connection, abs_path: str, rel: str, st: os.stat_r
     fm, fm_lines = _split_frontmatter(lines)
     meta = _file_meta(rel, lines, fm, st)
 
+    # Preserve existing hit_count, last_accessed, salience_score, and verified_golden if already tracked
+    old_file = conn.execute("SELECT hit_count, last_accessed, salience_score, verified_golden FROM files WHERE path = ?", (rel,)).fetchone()
+    hit_count = old_file["hit_count"] if old_file and "hit_count" in old_file.keys() else 0
+    last_accessed = old_file["last_accessed"] if old_file and "last_accessed" in old_file.keys() else None
+    salience_score = old_file["salience_score"] if old_file and "salience_score" in old_file.keys() else 0.0
+    if old_file and "verified_golden" in old_file.keys() and old_file["verified_golden"]:
+        meta["verified_golden"] = 1
+
     old = conn.execute("SELECT rowid_ FROM chunk_map WHERE path = ?", (rel,)).fetchall()
     for r in old:
         conn.execute("DELETE FROM chunks WHERE rowid = ?", (r[0],))
@@ -289,11 +327,13 @@ def _index_file(conn: sqlite3.Connection, abs_path: str, rel: str, st: os.stat_r
     conn.execute(
         """INSERT OR REPLACE INTO files(path, mtime, size, project, pnorm, agent, session, title, date, rtype, rid,
            status, source_commit, tags, created_at, updated_at, tzlocal, valid_from, valid_until, source_event_time,
-           ingestion_time, superseded_by, agent_id, run_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           ingestion_time, superseded_by, agent_id, run_id, verified_golden, hit_count, last_accessed, salience_score)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (rel, st.st_mtime, st.st_size, meta["project"], meta["pnorm"], meta["agent"], meta["session"], meta["title"],
          meta["date"], meta["rtype"], meta["rid"], meta["status"], meta["source_commit"], meta["tags"],
          meta["created_at"], meta["updated_at"], meta["tzlocal"], meta["valid_from"], meta["valid_until"],
-         meta["source_event_time"], meta["ingestion_time"], meta["superseded_by"], meta["agent_id"], meta["run_id"]),
+         meta["source_event_time"], meta["ingestion_time"], meta["superseded_by"], meta["agent_id"], meta["run_id"],
+         meta["verified_golden"], hit_count, last_accessed, salience_score),
     )
 
     # Wikilinks & Graph node/edge indexing
@@ -395,6 +435,215 @@ def local_when(date: str, ts: str, tzlocal: int) -> str:
         return utc.astimezone().strftime(fmt)
     except ValueError:
         return f"{date} {ts}".strip()
+
+
+# --------------------------------------------------------------------------- salience & recall
+HALF_LIFE_DAYS = 90.0
+
+
+def calculate_decay(weight: float, elapsed_seconds: float, half_life_days: float = HALF_LIFE_DAYS) -> float:
+    """Calculates exponential half-life decay: w * 2^(- dt_days / H)."""
+    elapsed_days = max(0.0, float(elapsed_seconds)) / 86400.0
+    return float(weight) * (2.0 ** (-elapsed_days / half_life_days))
+
+
+def _parse_timestamp(ts_val: Any) -> datetime:
+    """Robustly parse an ISO timestamp or date string to a timezone-aware UTC datetime."""
+    if isinstance(ts_val, datetime):
+        if ts_val.tzinfo is None:
+            return ts_val.replace(tzinfo=timezone.utc)
+        return ts_val
+    s = str(ts_val or "").strip()
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        try:
+            dt = datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            try:
+                dt = datetime.strptime(s[:10], "%Y-%m-%d")
+            except ValueError:
+                dt = datetime.now(timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def get_salience(entry_id: str, as_of: Optional[str | datetime] = None, conn: Optional[sqlite3.Connection] = None) -> Dict[str, Any]:
+    """Calculate and return salience statistics for an entry_id at evaluation time `as_of` (defaults to now).
+    Formula: S(t) = sum(w_i * 2^(- (t - t_i) / H)) where H = 90 days.
+    """
+    eid = str(entry_id or "").strip()
+    if not eid:
+        return {
+            "entry_id": "",
+            "hit_count": 0,
+            "last_accessed": None,
+            "salience_score": 0.0,
+            "verified_golden": False,
+        }
+    eid_norm = eid.replace("\\", "/")
+
+    close_conn = False
+    if conn is None:
+        conn = connect()
+        close_conn = True
+
+    try:
+        now_dt = _parse_timestamp(as_of) if as_of is not None else datetime.now(timezone.utc)
+        alt_norm = eid_norm.replace("/", "\\")
+
+        # 1. Fetch recall events for this entry_id
+        rows = conn.execute(
+            "SELECT timestamp, weight FROM recall_events WHERE entry_id = ? OR entry_id = ? ORDER BY timestamp ASC",
+            (eid_norm, alt_norm)
+        ).fetchall()
+
+        hit_count = len(rows)
+        last_accessed = rows[-1]["timestamp"] if rows else None
+
+        # 2. Compute decayed salience score S(t) = sum(w_i * 2^(- (t - t_i) / H))
+        salience_score = 0.0
+        for r in rows:
+            t_i = _parse_timestamp(r["timestamp"])
+            dt_sec = (now_dt - t_i).total_seconds()
+            if dt_sec < 0.0:
+                dt_sec = 0.0
+            salience_score += calculate_decay(r["weight"], dt_sec, half_life_days=HALF_LIFE_DAYS)
+
+        # 3. Check verified_golden
+        is_golden = False
+        ms = conn.execute(
+            "SELECT verified_golden FROM memory_salience WHERE entry_id = ? OR entry_id = ?",
+            (eid_norm, alt_norm)
+        ).fetchone()
+        if ms and ms["verified_golden"]:
+            is_golden = True
+
+        base_ref = eid_norm.split("#")[0] if "#" in eid_norm else eid_norm
+        if not is_golden:
+            f_row = conn.execute(
+                "SELECT verified_golden FROM files WHERE path = ? OR rid = ? OR replace(path, '\\', '/') = ?",
+                (base_ref, base_ref, base_ref)
+            ).fetchone()
+            if f_row and f_row["verified_golden"]:
+                is_golden = True
+
+        if not is_golden and "#" in eid_norm:
+            ms_base = conn.execute(
+                "SELECT verified_golden FROM memory_salience WHERE entry_id = ?",
+                (base_ref,)
+            ).fetchone()
+            if ms_base and ms_base["verified_golden"]:
+                is_golden = True
+
+        # Cache in memory_salience table
+        try:
+            with conn:
+                conn.execute(
+                    """INSERT INTO memory_salience(entry_id, hit_count, last_accessed, salience_score, verified_golden)
+                       VALUES (?, ?, ?, ?, ?)
+                       ON CONFLICT(entry_id) DO UPDATE SET
+                           hit_count = excluded.hit_count,
+                           last_accessed = excluded.last_accessed,
+                           salience_score = excluded.salience_score,
+                           verified_golden = MAX(memory_salience.verified_golden, excluded.verified_golden)""",
+                    (eid_norm, hit_count, last_accessed, round(salience_score, 6), 1 if is_golden else 0)
+                )
+        except sqlite3.OperationalError:
+            pass
+
+        return {
+            "entry_id": eid_norm,
+            "hit_count": hit_count,
+            "last_accessed": last_accessed,
+            "salience_score": round(salience_score, 6),
+            "verified_golden": is_golden,
+        }
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def record_recall_event(entry_id: str, weight: float = 1.0, timestamp: Optional[str | datetime] = None) -> Dict[str, Any]:
+    """Records a recall event for the specified memory entry / chunk, updating hit_count, last_accessed,
+    and recalculating the exponential decay salience score S(t)."""
+    eid = str(entry_id or "").strip()
+    if not eid:
+        return {
+            "entry_id": "",
+            "hit_count": 0,
+            "last_accessed": None,
+            "salience_score": 0.0,
+            "verified_golden": False,
+        }
+    eid_norm = eid.replace("\\", "/")
+
+    if timestamp is None:
+        event_dt = datetime.now(timezone.utc)
+        event_ts = event_dt.isoformat()
+    elif isinstance(timestamp, datetime):
+        event_dt = timestamp if timestamp.tzinfo is not None else timestamp.replace(tzinfo=timezone.utc)
+        event_ts = event_dt.isoformat()
+    else:
+        event_dt = _parse_timestamp(timestamp)
+        event_ts = event_dt.isoformat()
+
+    conn = connect()
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO recall_events(entry_id, timestamp, weight) VALUES (?, ?, ?)",
+                (eid_norm, event_ts, float(weight))
+            )
+            base_ref = eid_norm.split("#")[0] if "#" in eid_norm else None
+            if base_ref and base_ref != eid_norm:
+                conn.execute(
+                    "INSERT INTO recall_events(entry_id, timestamp, weight) VALUES (?, ?, ?)",
+                    (base_ref, event_ts, float(weight))
+                )
+
+        sal = get_salience(eid_norm, as_of=event_dt, conn=conn)
+
+        ref_to_sync = base_ref or eid_norm
+        try:
+            with conn:
+                conn.execute(
+                    "UPDATE files SET hit_count = ?, last_accessed = ?, salience_score = ? WHERE path = ? OR rid = ? OR replace(path, '\\', '/') = ?",
+                    (sal["hit_count"], sal["last_accessed"], sal["salience_score"], ref_to_sync, ref_to_sync, ref_to_sync)
+                )
+        except sqlite3.OperationalError:
+            pass
+
+        return sal
+    finally:
+        conn.close()
+
+
+def set_verified_golden(entry_id: str, golden: bool = True) -> bool:
+    """Mark or unmark a memory entry or file as verified golden."""
+    eid = str(entry_id or "").strip()
+    if not eid:
+        return False
+    eid_norm = eid.replace("\\", "/")
+    val = 1 if golden else 0
+    conn = connect()
+    try:
+        with conn:
+            conn.execute(
+                """INSERT INTO memory_salience(entry_id, hit_count, last_accessed, salience_score, verified_golden)
+                   VALUES (?, 0, NULL, 0.0, ?)
+                   ON CONFLICT(entry_id) DO UPDATE SET verified_golden = ?""",
+                (eid_norm, val, val)
+            )
+            base_ref = eid_norm.split("#")[0] if "#" in eid_norm else eid_norm
+            conn.execute(
+                "UPDATE files SET verified_golden = ? WHERE path = ? OR rid = ? OR replace(path, '\\', '/') = ?",
+                (val, base_ref, base_ref, base_ref)
+            )
+        return True
+    finally:
+        conn.close()
 
 
 # --------------------------------------------------------------------------- search
@@ -516,23 +765,50 @@ def search(query: str, project: Optional[str] = None, limit: int = 5, mode: Opti
                 if (r["path"], r["line"]) not in seen_ids:
                     or_rows.append(r)
 
+        import math
         if is_time_sort:
             all_rows = list(and_rows) + list(or_rows)
             def time_key(r: sqlite3.Row) -> tuple[str, str, int]:
                 return (r["date"] or "", r["ts"] or "", r["line"] or 0)
             all_rows.sort(key=time_key, reverse=(ob == "time_desc"))
             kw = [dict(r) for r in all_rows]
+        elif ob == "salience":
+            all_rows = list(and_rows)
+            seen_ids = {(r["path"], r["line"]) for r in and_rows}
+            for r in or_rows:
+                if (r["path"], r["line"]) not in seen_ids:
+                    all_rows.append(r)
+
+            part: List[Tuple[int, float, float, Dict[str, Any]]] = []
+            for r in all_rows:
+                f = file_of(r["path"])
+                if f is None:
+                    continue
+                cid = f"{r['path'].replace(os.sep, '/')}#{r['line']}"
+                sal = get_salience(cid, as_of=as_of, conn=conn)
+                is_golden = bool(sal["verified_golden"] or (f["verified_golden"] if "verified_golden" in f.keys() else False))
+                golden_prio = 0 if is_golden else 1
+                part.append((golden_prio, -sal["salience_score"], r["rank"], dict(r)))
+            part.sort(key=lambda x: (x[0], x[1], x[2]))
+            kw = [d for _, _, _, d in part]
         else:
+            # relevance (default BM25 + salience boost, with verified_golden ALWAYS strictly first)
             for block in (and_rows, or_rows):
-                part: List[Tuple[float, Dict[str, Any]]] = []
+                part_rel: List[Tuple[int, float, Dict[str, Any]]] = []
                 for r in block:
                     f = file_of(r["path"])
                     if f is None:
                         continue
                     penalty = 1.5 if f["rtype"] == "readme" else 0.0
-                    part.append((r["rank"] + penalty, dict(r)))
-                part.sort(key=lambda x: x[0])
-                kw.extend(d for _, d in part)
+                    cid = f"{r['path'].replace(os.sep, '/')}#{r['line']}"
+                    sal = get_salience(cid, as_of=as_of, conn=conn)
+                    is_golden = bool(sal["verified_golden"] or (f["verified_golden"] if "verified_golden" in f.keys() else False))
+                    golden_prio = 0 if is_golden else 1
+                    sal_boost = math.log1p(max(0.0, sal["salience_score"])) * 0.5
+                    effective_rank = r["rank"] + penalty - sal_boost
+                    part_rel.append((golden_prio, effective_rank, dict(r)))
+                part_rel.sort(key=lambda x: (x[0], x[1]))
+                kw.extend(d for _, _, d in part_rel)
 
         results: List[Dict[str, Any]] = []
         per_file: Dict[str, int] = {}
@@ -552,8 +828,9 @@ def search(query: str, project: Optional[str] = None, limit: int = 5, mode: Opti
                 head = memory_engine._get_git_commit(f["project"])
                 stale = bool(head and head != sc)
 
+            cid = f"{r['path'].replace(os.sep, '/')}#{r['line']}"
             res_item = {
-                "id": f"{r['path'].replace(os.sep, '/')}#{r['line']}",
+                "id": cid,
                 "project": f["project"],
                 "type": f["rtype"],
                 "title": f["title"],
@@ -579,6 +856,13 @@ def search(query: str, project: Optional[str] = None, limit: int = 5, mode: Opti
                 s_end = r["endline"] + ctx
                 res_item["context"] = _read_lines(r["path"], s_start, s_end)
                 res_item["context_range"] = f"{s_start}-{s_end}"
+
+            # Record recall event for called / selected memory search hit
+            sal = record_recall_event(cid, weight=1.0)
+            res_item["hit_count"] = sal["hit_count"]
+            res_item["last_accessed"] = sal["last_accessed"]
+            res_item["salience_score"] = sal["salience_score"]
+            res_item["verified_golden"] = sal["verified_golden"]
 
             results.append(res_item)
             if len(results) >= limit:
@@ -667,8 +951,11 @@ def _record(conn: sqlite3.Connection, f: sqlite3.Row, start: int, end: int, extr
             "type": r["type"]
         })
 
+    entry_id = f["rid"] or f"{f['path'].replace(os.sep, '/')}#{start}"
+    sal = get_salience(entry_id, conn=conn)
+    is_golden = bool(sal["verified_golden"] or (f["verified_golden"] if "verified_golden" in f.keys() else False))
     out = {
-        "id": f["rid"] or f"{f['path'].replace(os.sep, '/')}#{start}",
+        "id": entry_id,
         "project": f["project"], "type": f["rtype"], "title": f["title"], "tags": f["tags"], "status": f["status"],
         "agent": f["agent"], "session": f["session"], "date": f["date"],
         "source_commit": f["source_commit"], "head_commit": head, "stale_warning": stale,
@@ -683,10 +970,25 @@ def _record(conn: sqlite3.Connection, f: sqlite3.Row, start: int, end: int, extr
         "created_at": f["created_at"], "updated_at": f["updated_at"],
         "lines": f"{start}-{end}", "truncated": truncated,
         "content": text, "filepath": os.path.join(_vault_root(), f["path"]),
+        "hit_count": sal["hit_count"],
+        "last_accessed": sal["last_accessed"],
+        "salience_score": sal["salience_score"],
+        "verified_golden": is_golden,
     }
     if extra:
         out.update(extra)
     return out
+
+
+def _finish_get(rec: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not rec:
+        return None
+    sal = record_recall_event(rec["id"], weight=1.0)
+    rec["hit_count"] = sal["hit_count"]
+    rec["last_accessed"] = sal["last_accessed"]
+    rec["salience_score"] = sal["salience_score"]
+    rec["verified_golden"] = sal["verified_golden"]
+    return rec
 
 
 def get(record_id: str, surround: int = 0) -> Optional[Dict[str, Any]]:
@@ -700,7 +1002,7 @@ def get(record_id: str, surround: int = 0) -> Optional[Dict[str, Any]]:
     try:
         f = conn.execute("SELECT * FROM files WHERE rid = ?", (rid,)).fetchone()
         if f:
-            return _record(conn, f, 1, 10 ** 6)
+            return _finish_get(_record(conn, f, 1, 10 ** 6))
 
         m = re.match(r"^(.*?)#(?:L)?(\d+)(?:[-:](?:L)?(\d+))?$", rid, re.IGNORECASE)
         if m:
@@ -722,7 +1024,7 @@ def get(record_id: str, surround: int = 0) -> Optional[Dict[str, Any]]:
             if end_line is not None:
                 s = max(1, line - surround) if surround else line
                 e = end_line + surround if surround else end_line
-                return _record(conn, f, s, e)
+                return _finish_get(_record(conn, f, s, e))
 
             c = conn.execute(
                 "SELECT line, endline FROM chunks WHERE path = ? AND line <= ? AND endline >= ? LIMIT 1",
@@ -733,11 +1035,11 @@ def get(record_id: str, surround: int = 0) -> Optional[Dict[str, Any]]:
             if surround:
                 start = max(1, start - surround)
                 end = end + surround
-            return _record(conn, f, start, end)
+            return _finish_get(_record(conn, f, start, end))
 
         f = _file_row(conn, rid)
         if f:
-            return _record(conn, f, 1, 10 ** 6)
+            return _finish_get(_record(conn, f, 1, 10 ** 6))
 
         # legacy v1 ids were bare file names ('2026-10-16', 'readme'): several notes share them, so list them
         name = rid.lower() if rid.lower().endswith(".md") else rid.lower() + ".md"
@@ -751,6 +1053,6 @@ def get(record_id: str, surround: int = 0) -> Optional[Dict[str, Any]]:
             "ambiguous": len(rows) > 1,
             "matches": [{"id": r["path"].replace(os.sep, "/"), "title": r["title"], "date": r["date"], "agent": r["agent"]} for r in rows],
         }
-        return _record(conn, newest, 1, 10 ** 6, extra)
+        return _finish_get(_record(conn, newest, 1, 10 ** 6, extra))
     finally:
         conn.close()

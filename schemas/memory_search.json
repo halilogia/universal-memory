@@ -30,10 +30,11 @@
         "type": "string",
         "enum": [
           "relevance",
+          "salience",
           "time_asc",
           "time_desc"
         ],
-        "description": "Sonuç sıralaması: 'relevance' (varsayılan BM25), 'time_asc' (eskiden yeniye kronolojik), 'time_desc' (en yeniden en eskiye).",
+        "description": "Sonuç sıralaması: 'relevance' (varsayılan BM25 + salience takviyeli), 'salience' (hafıza ısı haritası / salience puanına göre), 'time_asc' (eskiden yeniye kronolojik), 'time_desc' (en yeniden en eskiye).",
         "default": "relevance"
       },
       "surround": {
