@@ -338,6 +338,10 @@ def _index_file(conn: sqlite3.Connection, abs_path: str, rel: str, st: os.stat_r
 
     # Wikilinks & Graph node/edge indexing
     node_id = meta["rid"] or rel.replace(os.sep, "/").removesuffix(".md")
+    for (old_nid,) in conn.execute("SELECT id FROM memory_nodes WHERE path = ?", (rel,)).fetchall():
+        if old_nid != node_id:
+            conn.execute("DELETE FROM memory_edges WHERE source_id = ?", (old_nid,))
+            conn.execute("DELETE FROM memory_nodes WHERE id = ?", (old_nid,))
     conn.execute(
         "INSERT OR REPLACE INTO memory_nodes(id, path, project, type, status) VALUES (?,?,?,?,?)",
         (node_id, rel, meta["project"], meta["rtype"], meta["status"])
@@ -398,6 +402,9 @@ def sync_index(force: bool = False) -> int:
                 for r in conn.execute("SELECT rowid_ FROM chunk_map WHERE path = ?", (gone,)).fetchall():
                     conn.execute("DELETE FROM chunks WHERE rowid = ?", (r[0],))
                 conn.execute("DELETE FROM chunk_map WHERE path = ?", (gone,))
+                for (old_nid,) in conn.execute("SELECT id FROM memory_nodes WHERE path = ?", (gone,)).fetchall():
+                    conn.execute("DELETE FROM memory_edges WHERE source_id = ?", (old_nid,))
+                conn.execute("DELETE FROM memory_nodes WHERE path = ?", (gone,))
                 conn.execute("DELETE FROM files WHERE path = ?", (gone,))
             conn.execute("COMMIT")
             return changed
