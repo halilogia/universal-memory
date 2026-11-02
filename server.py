@@ -7,6 +7,7 @@ Connects Antigravity, Claude Code, and Codex to the Obsidian SQLite FTS5 Memory 
 import sys
 import json
 import logging
+import time
 import importlib.util
 from typing import Any, Dict, List
 
@@ -15,6 +16,7 @@ from typing import Any, Dict, List
 REQUIRED_MODULES = (
     "memory_engine", "memory_index", "bitemporal",
     "conflict_resolver", "context_injector", "hook_context", "second_brain",
+    "audit_logger",
 )
 
 
@@ -31,6 +33,7 @@ def _verify_install() -> None:
 _verify_install()
 
 import memory_engine
+import audit_logger
 
 logging.basicConfig(level=logging.ERROR, stream=sys.stderr)
 
@@ -329,6 +332,7 @@ def handle_request(req: Dict[str, Any]) -> Dict[str, Any]:
     if method == "tools/call":
         tool_name = params.get("name")
         args = params.get("arguments", {})
+        start_time = time.perf_counter()
 
         try:
             if tool_name == "memory_search":
@@ -413,6 +417,14 @@ def handle_request(req: Dict[str, Any]) -> Dict[str, Any]:
             else:
                 text_out = f"Bilinmeyen araç: {tool_name}"
 
+            dur_ms = (time.perf_counter() - start_time) * 1000.0
+            audit_logger.log_tool_event(
+                tool_name=tool_name,
+                args=args,
+                duration_ms=dur_ms,
+                status="ok",
+                summary=f"len={len(text_out)}" if isinstance(text_out, str) else None
+            )
             return {
                 "jsonrpc": "2.0",
                 "id": req_id,
@@ -426,6 +438,14 @@ def handle_request(req: Dict[str, Any]) -> Dict[str, Any]:
                 }
             }
         except Exception as e:
+            dur_ms = (time.perf_counter() - start_time) * 1000.0
+            audit_logger.log_tool_event(
+                tool_name=tool_name,
+                args=args,
+                duration_ms=dur_ms,
+                status="error",
+                error_message=str(e)
+            )
             return {
                 "jsonrpc": "2.0",
                 "id": req_id,

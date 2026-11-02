@@ -17,6 +17,7 @@ env/
 *.db
 *.jsonl
 *.log
+logs/
 
 # Memory archives & transcripts
 vault/
