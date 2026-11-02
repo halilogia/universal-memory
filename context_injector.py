@@ -15,6 +15,8 @@ import json
 import os
 import re
 import sys
+from collections import Counter
+from math import log1p
 from typing import Any, Dict, List, Optional
 
 import memory_index
@@ -29,6 +31,23 @@ SECTIONS = [
 ]
 _FM = re.compile(r"\A---\n.*?\n---\n", re.DOTALL)
 _TASK = re.compile(r"^\s*-\s*\[ \]\s*(.+)$", re.MULTILINE)
+_VERIFICATION_WORDS = {"dogrulama", "verification", "review", "kural", "test"}
+VERIFICATION_TEMPLATE = (
+    "\n\n## Evidence Checklist\n"
+    "1. Test Exit Code: command, exit code, passed/failed counts.\n"
+    "2. Build Integrity: build command, exit code, artifact.\n"
+    "3. Visual/Viewport Check: viewport sizes, screenshot, observed result.\n"
+    "4. Console Zero Error: inspected logs, error count.\n"
+    "Mark unperformed checks as NOT RUN; explain N/A."
+)
+
+
+def _tokens(text: str) -> list[str]:
+    return re.findall(r"\w+", memory_index.fold(text))
+
+
+def _negative(row: Any) -> bool:
+    return row["rtype"] == "lesson" and "negative" in memory_index.parse_tags(row["tags"] or "[]")
 
 
 def _body(rel: str) -> str:
@@ -46,29 +65,45 @@ def _squeeze(text: str, width: int) -> str:
     return text if len(text) <= width else text[: width - 1].rstrip() + "…"
 
 
-def _score(row: Any, body: str, qtok: set, newest_rank: int) -> float:
+def _score(row: Any, body: str, qtok: set[str], newest_rank: int) -> float:
+    """Reward coverage and saturated frequency; title occurrences count threefold."""
     weight = TYPE_WEIGHT.get(row["rtype"], 0.5)
-    if "negative" in (row["tags"] or ""):
-        weight += 0.3
+    title_counts = Counter(_tokens(row["title"] or ""))
+    body_counts = Counter(_tokens(body))
     overlap = 0.0
+    frequency = 0.0
     if qtok:
-        doc = set(re.findall(r"\w+", memory_index.fold(row["title"] + " " + body)))
-        overlap = len(qtok & doc) / len(qtok)
-    recency = 1.0 / (1 + newest_rank)
-    return weight + 2.0 * overlap + 0.2 * recency
+        overlap = len(qtok & (title_counts.keys() | body_counts.keys())) / len(qtok)
+        frequency = sum(min(3 * title_counts[t] + body_counts[t], 12) / 12 for t in qtok) / len(qtok)
+    negative = (0.15 + 0.35 * overlap) if _negative(row) else 0.0
+    recency = 1.0 / (1.0 + log1p(max(0, newest_rank)))
+    return weight + 3.0 * overlap + frequency + negative + 0.25 * recency
 
 
 def build_context(project: str, query: str = "", max_chars: int = 3000, as_of: Optional[str] = None,
-                  agent_id: str = "", include_proposals: bool = False, card_chars: int = 280) -> Dict[str, Any]:
-    """Return ``{"text": str, "cards": [...], "chars": int}``; text never exceeds ``max_chars``."""
+                  agent_id: str = "", include_proposals: bool = False, card_chars: int = 280,
+                  include_global: bool = True, inject_verification_template: bool = False) -> Dict[str, Any]:
+    """Build a bounded pack. Global mode adds global and query-matching foreign cards.
+
+    ``all``/``*`` select every project, even without a query. Named projects retain
+    only their own latest handoff. Verification keywords always enable the checklist.
+    """
+    if max_chars < 0 or card_chars < 1:
+        raise ValueError("max_chars must be nonnegative and card_chars must be positive")
+    verification = inject_verification_template or bool(_VERIFICATION_WORDS & set(_tokens(query)))
+    suffix = VERIFICATION_TEMPLATE if verification else ""
+    if len(suffix) > max_chars:
+        raise ValueError(f"max_chars must be at least {len(suffix)} for the evidence checklist")
+    content_budget = max_chars - len(suffix)
     memory_index.ensure_fresh()
     pnorm = memory_index._norm_project(project)
+    all_projects = project.strip().lower() in {"all", "*"}
     statuses = {"canonical"} | ({"proposal"} if include_proposals else set())
     conn = memory_index.connect()
     try:
         rows = conn.execute(
-            "SELECT * FROM files WHERE (pnorm = ? OR pnorm = 'global') AND rtype IN ('decision','lesson','convention','handoff') "
-            "ORDER BY date DESC, updated_at DESC", (pnorm,)).fetchall()
+            "SELECT * FROM files WHERE (? OR pnorm = ?) AND rtype IN ('decision','lesson','convention','handoff') "
+            "ORDER BY date DESC, updated_at DESC, path ASC", (all_projects or include_global, pnorm)).fetchall()
     finally:
         conn.close()
 
@@ -81,13 +116,18 @@ def build_context(project: str, query: str = "", max_chars: int = 3000, as_of: O
         if agent_id and r["agent_id"] and r["agent_id"] != agent_id:
             continue                                                   # scoped to another agent
         if r["rtype"] == "handoff":
-            latest_handoff = latest_handoff or r
+            if not all_projects and r["pnorm"] == pnorm:
+                latest_handoff = latest_handoff or r
             continue
         body = _body(r["path"])
-        kind = "negative" if "negative" in (r["tags"] or "") else r["rtype"]
+        if not all_projects and r["pnorm"] not in {pnorm, "global"}:
+            if not qtok.intersection(_tokens((r["title"] or "") + " " + body)):
+                continue
+        kind = "negative" if _negative(r) else r["rtype"]
         cards.append({
             "id": r["rid"] or r["path"].replace(os.sep, "/").removesuffix(".md"),
             "kind": kind, "title": r["title"], "text": _squeeze(body, card_chars),
+            "project": r["project"],
             "score": round(_score(r, body, qtok, rank), 3),
         })
     cards.sort(key=lambda c: c["score"], reverse=True)
@@ -98,19 +138,23 @@ def build_context(project: str, query: str = "", max_chars: int = 3000, as_of: O
 
     header = f"# HAFIZA BAĞLAMI — {project}" + (f" (as_of {as_of})" if as_of else "")
     picked: List[Dict[str, Any]] = []
-    used = len(header) + 1
+    used = len(header)
+    section_kinds: set[str] = set()
     tasks_block = ""
     if tasks:
         tasks_block = "\n## AÇIK İŞLER\n" + "\n".join(f"- [ ] {_squeeze(t, 160)}" for t in tasks)
-        used += len(tasks_block) + 1
+        if used + len(tasks_block) + 1 <= content_budget:
+            used += len(tasks_block) + 1
+        else:
+            tasks_block = ""
     for c in cards:
-        if qtok and c["score"] < TYPE_WEIGHT.get(c["kind"], 0.5) + 0.01 and len(picked) >= 3:
-            continue                                                   # unrelated to the query once we have a base
         line = f"- {c['title']}: {c['text']}\n" if c["text"] and c["text"] != c["title"] else f"- {c['title']}\n"
-        if used + len(line) + 24 > max_chars:
+        section_cost = 0 if c["kind"] in section_kinds else len("\n\n## " + dict(SECTIONS)[c["kind"]])
+        if used + len(line) + section_cost > content_budget:
             continue
         picked.append(c)
-        used += len(line)
+        used += len(line) + section_cost
+        section_kinds.add(c["kind"])
 
     out = [header]
     for kind, label in SECTIONS:
@@ -121,8 +165,9 @@ def build_context(project: str, query: str = "", max_chars: int = 3000, as_of: O
     if tasks_block:
         out.append(tasks_block)
     text = "\n".join(out)
-    if len(text) > max_chars:
-        text = text[: max_chars - 1].rstrip() + "…"
+    if len(text) > content_budget:
+        text = _squeeze(text, content_budget) if content_budget else ""
+    text += suffix
     return {"text": text, "cards": picked, "chars": len(text)}
 
 
@@ -148,10 +193,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--as-of", default=None, help="time-travel: ISO date/time")
     ap.add_argument("--agent-id", default="")
     ap.add_argument("--proposals", action="store_true", help="also include uncommitted proposals")
+    ap.add_argument("--no-global", action="store_true", help="restrict a named project to its own records")
+    ap.add_argument("--inject-verification-template", action="store_true", help="always append the evidence checklist")
     ap.add_argument("--out", default=None, help="write pack to file instead of stdout")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
-    res = build_context(a.project, a.query, a.max_chars, a.as_of, a.agent_id, a.proposals)
+    res = build_context(a.project, a.query, a.max_chars, a.as_of, a.agent_id, a.proposals,
+                        include_global=not a.no_global, inject_verification_template=a.inject_verification_template)
     payload = json.dumps(res, ensure_ascii=False, indent=2) if a.json else res["text"]
     if a.out:
         with open(a.out, "w", encoding="utf-8") as f:

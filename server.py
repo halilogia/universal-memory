@@ -184,9 +184,11 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "project": {"type": "string"},
+                "project": {"type": "string", "description": "Proje adı; all veya * tüm projeleri seçer."},
                 "query": {"type": "string", "description": "İlgililik için görev/konu metni."},
-                "max_chars": {"type": "integer", "default": 3000},
+                "max_chars": {"type": "integer", "minimum": 0, "default": 3000},
+                "include_global": {"type": "boolean", "default": True, "description": "Global kayıtları ve sorguyla eşleşen diğer proje kartlarını dahil et; false yalnızca seçili proje."},
+                "inject_verification_template": {"type": "boolean", "default": False, "description": "Kanıt kontrol listesini ekle; doğrulama, verification, review, kural ve test sözcükleri de otomatik etkinleştirir. Bütçe tam listeye yetmelidir."},
                 "as_of": {"type": "string", "description": "Opsiyonel zaman yolculuğu."},
                 "agent_id": {"type": "string"}
             },
@@ -382,7 +384,9 @@ def handle_request(req: Dict[str, Any]) -> Dict[str, Any]:
                 import context_injector
                 res = context_injector.build_context(args.get("project", ""), args.get("query", ""),
                                                      int(args.get("max_chars", 3000)), args.get("as_of"),
-                                                     args.get("agent_id", ""))
+                                                     args.get("agent_id", ""),
+                                                     include_global=args.get("include_global", True),
+                                                     inject_verification_template=args.get("inject_verification_template", False))
                 text_out = res["text"]
 
             elif tool_name == "memory_commit":

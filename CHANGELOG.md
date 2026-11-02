@@ -6,6 +6,12 @@ Tüm önemli değişiklikler bu dosyada SemVer standardına uygun olarak belgele
 
 ## [Unreleased]
 
+### Context retrieval
+- Add `all`/`*` project selection and `include_global` to context packs and the MCP tool. Named projects include global records and query-matching foreign rules, decisions, and lessons by default; their handoff tasks remain local. Cards expose their source project.
+- Rank by query coverage, capped term frequency with 3x title weight, recency, and relevance-sensitive negative lesson weight. Preserve canonical, temporal, and agent filters.
+- Append an evidence checklist on verification keywords or explicit request, reserving its full character budget. Reject budgets too small for the checklist and keep selected cards complete.
+- Add isolated cross-project, ranking, budget, validity, and MCP forwarding regression tests.
+
 ### Security
 - Prevent proposal frontmatter injection by normalizing line breaks and safely quoting title, project, and tags. Missing or empty status and duplicate status keys now fail closed to `proposal`. Regression tests cover injection, malformed headers, metadata round trips, and explicit commit approval.
 
