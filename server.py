@@ -18,6 +18,7 @@ REQUIRED_MODULES = (
     "conflict_resolver", "context_injector", "hook_context", "second_brain",
     "audit_logger",
     "devlog_bridge",
+    "compact_output",
 )
 
 
@@ -35,6 +36,7 @@ _verify_install()
 
 import memory_engine
 import audit_logger
+import compact_output
 
 logging.basicConfig(level=logging.ERROR, stream=sys.stderr)
 
@@ -57,6 +59,11 @@ TOOLS = [
                     "type": "integer",
                     "description": "Dönecek maksimum sonuç sayısı (varsayılan: 5).",
                     "default": 5
+                },
+                "verbose": {
+                    "type": "boolean",
+                    "description": "true: tüm alanlar (path, salience, hit_count...). Varsayılan kompakt: id, when, speaker, agent, snippet.",
+                    "default": False
                 },
                 "as_of": {
                     "type": "string",
@@ -104,6 +111,11 @@ TOOLS = [
                     "type": "integer",
                     "description": "Opsiyonel çevreleyen satır sayısı (örn. 3 veya 5). Belirtilen satır aralığını genişletir.",
                     "default": 0
+                },
+                "verbose": {
+                    "type": "boolean",
+                    "description": "true: boş ve sayaç alanları (hit_count, salience, filepath...) dahil tüm kayıt.",
+                    "default": False
                 },
                 "context_lines": {
                     "type": "integer",
@@ -387,7 +399,7 @@ def handle_request(req: Dict[str, Any]) -> Dict[str, Any]:
                     order_by=args.get("order_by", "relevance"),
                     surround=int(surr or 0)
                 )
-                text_out = json.dumps(res, ensure_ascii=False, indent=2)
+                text_out = compact_output.render_search(res, verbose=bool(args.get("verbose", False)))
 
             elif tool_name == "memory_get":
                 rid = args.get("record_id") or args.get("id") or args.get("path") or ""
@@ -396,7 +408,7 @@ def handle_request(req: Dict[str, Any]) -> Dict[str, Any]:
                 if not res:
                     text_out = f"Hata: Hafıza kaydı bulunamadı: '{rid}'"
                 else:
-                    text_out = json.dumps(res, ensure_ascii=False, indent=2)
+                    text_out = compact_output.render_record(res, verbose=bool(args.get("verbose", False)))
 
             elif tool_name == "memory_propose":
                 proj = args.get("project", "")

@@ -6,6 +6,9 @@ Tüm önemli değişiklikler bu dosyada SemVer standardına uygun olarak belgele
 
 ## [Unreleased]
 
+### Token efficiency
+- **Kompakt MCP çıktısı (`compact_output.py`):** `memory_search` artık varsayılan olarak yalnızca `id`, `when`, `speaker`, `agent`, `snippet` (≤320 karakter) ve anlamlı sinyalleri (`stale_warning`, `verified_golden`, `superseded_by`, `context`) döndürür; girintisiz JSON. Gerçek 5 sonuçlu arama 1.534 → 575 token (%63). `memory_get` boş ve sayaç alanlarını atar. Eski tam çıktı için `verbose: true`.
+
 ### Context retrieval
 - Add `all`/`*` project selection and `include_global` to context packs and the MCP tool. Named projects include global records and query-matching foreign rules, decisions, and lessons by default; their handoff tasks remain local. Cards expose their source project.
 - Rank by query coverage, capped term frequency with 3x title weight, recency, and relevance-sensitive negative lesson weight. Preserve canonical, temporal, and agent filters.

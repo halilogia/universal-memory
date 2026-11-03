@@ -299,7 +299,8 @@ class MemorySalienceTests(VaultTestCase):
             "params": {
                 "name": "memory_get",
                 "arguments": {
-                    "record_id": rid
+                    "record_id": rid,
+                    "verbose": True
                 }
             }
         }
@@ -318,7 +319,8 @@ class MemorySalienceTests(VaultTestCase):
                 "name": "memory_search",
                 "arguments": {
                     "query": "Universal Salience Architecture",
-                    "order_by": "salience"
+                    "order_by": "salience",
+                    "verbose": True
                 }
             }
         }
@@ -327,6 +329,11 @@ class MemorySalienceTests(VaultTestCase):
         self.assertTrue(len(search_results) > 0)
         first_hit = search_results[0]
         self.assertIn("hit_count", first_hit)
+        # Default (compact) output keeps the golden signal but drops counters.
+        search_req["params"]["arguments"].pop("verbose")
+        lean_hit = json.loads(server.handle_request(search_req)["result"]["content"][0]["text"])[0]
+        self.assertTrue(lean_hit["verified_golden"])
+        self.assertNotIn("hit_count", lean_hit)
         self.assertIn("last_accessed", first_hit)
         self.assertIn("salience_score", first_hit)
         self.assertIn("verified_golden", first_hit)
